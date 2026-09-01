@@ -358,11 +358,16 @@
             if (pwErr) throw pwErr;
           }
 
-          setProfile({
-            username: newUsername || profile.username,
-            height: fd.get('height'), weight: fd.get('weight'), age: fd.get('age'),
-            gender: fd.get('gender'), disease: fd.get('disease') || '', aiMode: fd.get('aiMode') || 'normal',
-          });
+          // ★ [버그수정] 화면 상태를 직접 조립하지 않고 서버에서 최신 프로필을 다시 읽어와 반영
+          // (isApproved/isAdmin 같은 필드가 누락되어 승인 대기 화면으로 잘못 튕기는 문제 방지)
+          const { data: freshProfile, error: refetchErr } = await sb.from('profiles').select('*').eq('id', session.user.id).single();
+          if (!refetchErr && freshProfile) {
+            setProfile({
+              username: freshProfile.username, height: freshProfile.height, weight: freshProfile.weight, age: freshProfile.age,
+              gender: freshProfile.gender, disease: freshProfile.disease || '', aiMode: freshProfile.ai_mode || 'normal',
+              isApproved: !!freshProfile.is_approved, isAdmin: !!freshProfile.is_admin
+            });
+          }
           setIsSettingsOpen(false);
         } catch (err) {
           setAccountError(translateAuthError(err.message));
