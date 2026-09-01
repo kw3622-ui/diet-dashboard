@@ -1,0 +1,1394 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.13.15/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: #f3f4f6;
+      -webkit-tap-highlight-color: transparent;
+      word-break: keep-all;
+      overflow-wrap: break-word;
+    }
+    .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3b82f6; border-radius: 50%; width: 28px; height: 28px; animation: spin 1s linear infinite; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    .pb-nav { padding-bottom: 90px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    // =====================================================================
+    // ★ Supabase 설정 (구글 앱스스크립트 + 시트 + 드라이브를 대체)
+    // =====================================================================
+    const SUPABASE_URL = 'https://nppkwxwzbyhfwsmdudge.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5wcGt3eHd6YnloZndzbWR1ZGdlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgyNTQ4OTYsImV4cCI6MjEwMzgzMDg5Nn0.QhIoiK5G7jC_VU9hrVpXNVw3AD8NdlmVq-1jgkR5kh4';
+    const FUNCTIONS_URL = SUPABASE_URL + '/functions/v1/diet-ai';
+    const EMAIL_DOMAIN = '@dietapp.local'; // 계정명만으로 가입/로그인하기 위한 내부용 더미 이메일 도메인
+    const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    // logs 테이블 행 -> 기존 화면 코드가 기대하는 모양으로 변환
+    const mapLogRow = (row) => ({
+      id: row.id,
+      date: row.log_date,
+      time: String(row.log_time || '').slice(0, 5),
+      category: row.category,
+      foodName: row.food_name,
+      calories: 0,
+      ingredients: row.ingredients || [],
+      analysis: row.analysis,
+      imageUrl: (row.image_urls || []).join(','),
+      rawInput: JSON.stringify(row.raw_input || {}),
+      isAlcohol: !!row.is_alcohol,
+    });
+
+    // Gemini 호출은 API 키를 숨기기 위해 Supabase Edge Function(diet-ai)을 통해서만 수행
+    const callAI = async (action, payload) => {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) throw new Error('로그인이 필요합니다.');
+      const res = await fetch(FUNCTIONS_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
+        body: JSON.stringify({ action, payload }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error((data && data.error) || 'AI 요청에 실패했습니다.');
+      return data;
+    };
+
+    const translateAuthError = (msg) => {
+      if (!msg) return '오류가 발생했습니다.';
+      if (msg.includes('already registered') || msg.includes('already exists') || msg.includes('duplicate')) return '이미 사용 중인 계정명입니다.';
+      if (msg.includes('Invalid login credentials')) return '계정명 또는 비밀번호가 올바르지 않습니다.';
+      if (msg.includes('Password should be at least') || msg.includes('at least 6')) return '비밀번호는 6자 이상이어야 합니다.';
+      return msg;
+    };
+
+    const compressImage = (file) => {
+      return new Promise((resolve, reject) => {
+        const fileName = file.name ? file.name.toLowerCase() : '';
+        if (fileName.endsWith('.heic') || fileName.endsWith('.heif') || file.type === 'image/heic') {
+          reject(new Error("아이폰의 HEIC(고효율) 사진은 카메라로 직접 찍거나 화면 캡처 후 올려주세요!"));
+          return;
+        }
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = (event) => {
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            const MAX_WIDTH = 600;
+            let width = img.width, height = img.height;
+            if (width > MAX_WIDTH) { height = Math.round((height * MAX_WIDTH) / width); width = MAX_WIDTH; }
+            canvas.width = width; canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, width, height);
+            resolve(canvas.toDataURL('image/jpeg', 0.6));
+          };
+          img.onerror = () => reject(new Error("이미지 처리 실패"));
+          img.src = event.target.result;
+        };
+        reader.onerror = () => reject(new Error("파일 읽기 실패"));
+      });
+    };
+
+    const formatDate = (d) => { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+
+    const parseDate = (dateStr) => {
+      if (!dateStr) return new Date();
+      if (dateStr.includes('T')) return new Date(dateStr);
+      const [y, m, d] = dateStr.split('-');
+      return new Date(y, m - 1, d);
+    };
+
+    const getDayStr = (dateStr) => {
+      const days = ['일', '월', '화', '수', '목', '금', '토'];
+      return days[parseDate(dateStr).getDay()];
+    };
+
+    const getKoreanWeekLabel = (dateStr) => {
+      const d = parseDate(dateStr);
+      const year = d.getFullYear();
+      const month = d.getMonth() + 1;
+      const date = d.getDate();
+      const firstDay = new Date(year, month - 1, 1).getDay();
+      const week = Math.ceil((date + firstDay) / 7);
+
+      const weekNames = ['첫', '둘', '셋', '넷', '다섯', '여섯'];
+      const weekName = weekNames[week - 1] || week;
+
+      return `${year}년 ${month}월 ${weekName}째주`;
+    };
+
+    const getWeekString = (dateStr) => {
+      const d = parseDate(dateStr);
+      d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+      const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+      const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+      return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
+    };
+
+    const getCurrentTimeStr = () => {
+      const now = new Date();
+      return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    };
+
+    const getDefaultCategoryByTime = () => {
+      const hour = new Date().getHours();
+      if (hour >= 5 && hour < 11) return '아침식사';
+      if (hour >= 11 && hour < 15) return '점심식사';
+      if (hour >= 15 && hour < 17) return '간식';
+      if (hour >= 17 && hour < 21) return '저녁식사';
+      return '야식';
+    };
+
+    // ★ [버그수정] 안드로이드 크롬에서 카메라/갤러리(네이티브 파일 선택) 앱을 다녀오면
+    // 브라우저가 내부적으로 들고 있는 뷰포트 치수가 갱신되지 않아 터치 좌표가 실제 화면과 어긋나는 현상 방지용.
+    // 모달이 닫혀 body 스크롤이 풀린 직후(overflow: unset 반영 이후) 스크롤을 1px 움직였다 되돌려서
+    // 브라우저가 레이아웃/뷰포트를 강제로 다시 계산하도록 만든다.
+    const nudgeViewportRepaint = () => {
+      setTimeout(() => {
+        const y = window.scrollY;
+        window.scrollTo(window.scrollX, y + 1);
+        requestAnimationFrame(() => window.scrollTo(window.scrollX, y));
+      }, 80);
+    };
+
+    const getWeekRange = (dateStr) => {
+      const d = parseDate(dateStr);
+      const day = d.getDay();
+      const diffToMonday = d.getDate() - day + (day === 0 ? -6 : 1);
+      const start = new Date(d); start.setDate(diffToMonday);
+      const end = new Date(start); end.setDate(start.getDate() + 6);
+      return { start: formatDate(start), end: formatDate(end), label: getKoreanWeekLabel(dateStr) };
+    };
+
+    const getMonthRange = (dateStr) => {
+      const d = parseDate(dateStr);
+      const start = new Date(d.getFullYear(), d.getMonth(), 1);
+      const end = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+      return { start: formatDate(start), end: formatDate(end), label: `${d.getFullYear()}년 ${d.getMonth() + 1}월` };
+    };
+
+    const defaultCategories = ['아침식사', '점심식사', '저녁식사', '간식', '야식', '운동'];
+
+    function App() {
+      const [session, setSession] = useState(undefined); // undefined = 확인 중, null = 비로그인, 객체 = 로그인됨
+      const [profile, setProfile] = useState(null);
+      const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+      const [activeTab, setActiveTab] = useState('home');
+      const [currentDate, setCurrentDate] = useState(formatDate(new Date()));
+      const [activeRange, setActiveRange] = useState({ start: '', end: '', label: '' });
+
+      const [logs, setLogs] = useState([]);
+      const [periodLogs, setPeriodLogs] = useState([]);
+
+      const [isFetching, setIsFetching] = useState(true);
+      const [isAnalyzing, setIsAnalyzing] = useState(false);
+      const [sysError, setSysError] = useState("");
+
+      const [reanalyzingId, setReanalyzingId] = useState(null);
+      const [deleteConfirmId, setDeleteConfirmId] = useState(null);
+      const [isMenuOpen, setIsMenuOpen] = useState(false);
+      const [customCategory, setCustomCategory] = useState("");
+      const [isCompressing, setIsCompressing] = useState(false);
+
+      const [statsMode, setStatsMode] = useState('week');
+      const [aiReport, setAiReport] = useState("");
+      const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+
+      const [dailyReport, setDailyReport] = useState(null);
+      const [isGeneratingDaily, setIsGeneratingDaily] = useState(false);
+
+      const [authMode, setAuthMode] = useState('login');
+      const [authError, setAuthError] = useState('');
+      const [authLoading, setAuthLoading] = useState(false);
+      const [accountError, setAccountError] = useState('');
+      const [accountSaving, setAccountSaving] = useState(false);
+
+      const [isAdminOpen, setIsAdminOpen] = useState(false);
+      const [memberList, setMemberList] = useState([]);
+      const [isLoadingMembers, setIsLoadingMembers] = useState(false);
+      const [memberActionId, setMemberActionId] = useState(null);
+
+      const [draft, setDraft] = useState({
+        isOpen: false, isEditMode: false, editLogId: null, editDate: '', editTime: '',
+        type: '', data: [], naturalText: '', memo: '', category: '점심식사', isCamera: false,
+        bp_sys: '', bp_dia: '', pulse: '', sugar: '', existingFoodName: '', existingIngredients: []
+      });
+
+      const wakeLockRef = useRef(null);
+
+      useEffect(() => {
+        if (draft.isOpen) document.body.style.overflow = 'hidden';
+        else document.body.style.overflow = 'unset';
+        return () => { document.body.style.overflow = 'unset'; };
+      }, [draft.isOpen]);
+
+      const handleInputBlur = () => {
+        setTimeout(() => window.scrollTo(window.scrollX, window.scrollY), 10);
+      };
+
+      useEffect(() => {
+        const requestWakeLock = async () => {
+          try { if ('wakeLock' in navigator) wakeLockRef.current = await navigator.wakeLock.request('screen'); }
+          catch (err) { }
+        };
+        const releaseWakeLock = async () => {
+          if (wakeLockRef.current !== null) { await wakeLockRef.current.release(); wakeLockRef.current = null; }
+        };
+        if (isAnalyzing || reanalyzingId || isGeneratingReport || isGeneratingDaily || isCompressing) requestWakeLock();
+        else releaseWakeLock();
+      }, [isAnalyzing, reanalyzingId, isGeneratingReport, isGeneratingDaily, isCompressing]);
+
+      // ★ 로그인 세션 확인 + 유지 (한 번 로그인하면 계속 로그인 상태 유지)
+      useEffect(() => {
+        sb.auth.getSession().then(({ data }) => setSession(data.session));
+        const { data: sub } = sb.auth.onAuthStateChange((_event, sess) => setSession(sess));
+        return () => sub.subscription.unsubscribe();
+      }, []);
+
+      // ★ 세션이 있으면 profiles 테이블에서 내 프로필 로드 (기존 localStorage 'dietProfile' 대체)
+      useEffect(() => {
+        if (!session) { setProfile(null); return; }
+        sb.from('profiles').select('*').eq('id', session.user.id).single().then(({ data, error }) => {
+          if (!error && data) {
+            setProfile({
+              username: data.username, height: data.height, weight: data.weight, age: data.age,
+              gender: data.gender, disease: data.disease || '', aiMode: data.ai_mode || 'normal',
+              isApproved: !!data.is_approved, isAdmin: !!data.is_admin
+            });
+          }
+        });
+      }, [session]);
+
+      useEffect(() => {
+        if (!session) return;
+        if (activeTab === 'home') {
+          fetchLogs(currentDate);
+        } else if (activeTab === 'stats') {
+          const range = statsMode === 'week' ? getWeekRange(currentDate) : getMonthRange(currentDate);
+          setActiveRange(range);
+          fetchPeriodLogs(range.start, range.end);
+        }
+      }, [currentDate, activeTab, session, statsMode]);
+
+      const fetchLogs = async (date) => {
+        setIsFetching(true); setDailyReport(null);
+        const { data, error } = await sb.from('logs').select('*').eq('log_date', date).order('log_time', { ascending: false });
+        if (error) setSysError(error.message); else setLogs((data || []).map(mapLogRow));
+        setIsFetching(false);
+        const { data: dr } = await sb.from('daily_reports').select('*').eq('report_date', date).maybeSingle();
+        if (dr) setDailyReport({ grade: dr.grade, comment: dr.comment });
+      };
+
+      const fetchPeriodLogs = async (startStr, endStr) => {
+        setIsFetching(true); setAiReport("");
+        const { data, error } = await sb.from('logs').select('*').gte('log_date', startStr).lte('log_date', endStr).order('log_date', { ascending: false }).order('log_time', { ascending: false });
+        if (error) setSysError(error.message); else setPeriodLogs((data || []).map(mapLogRow));
+        setIsFetching(false);
+        const { data: pr } = await sb.from('period_reports').select('*').eq('period_start', startStr).eq('is_month', statsMode === 'month').maybeSingle();
+        if (pr) setAiReport(pr.report_text);
+      };
+
+      const changeDate = (direction) => {
+        const d = parseDate(currentDate);
+        if (activeTab === 'home') {
+          d.setDate(d.getDate() + direction);
+        } else if (activeTab === 'stats') {
+          if (statsMode === 'week') d.setDate(d.getDate() + (direction * 7));
+          else if (statsMode === 'month') d.setMonth(d.getMonth() + direction);
+        }
+        setCurrentDate(formatDate(d));
+      };
+
+      const handleDatePick = (e) => {
+        if (!e.target.value) return;
+        let val = e.target.value;
+        if (val.includes('-W')) {
+          const [year, week] = val.split('-W');
+          const d = new Date(Date.UTC(year, 0, 1 + (Number(week) - 1) * 7));
+          setCurrentDate(d.toISOString().split('T')[0]);
+        } else if (activeTab === 'stats' && statsMode === 'month') {
+          setCurrentDate(val + '-01');
+        } else {
+          setCurrentDate(val);
+        }
+      };
+
+      // ★ 계정 정보 저장 (프로필 + 계정명 + 비밀번호, 기존 SettingsForm 대체)
+      const saveProfile = async (e) => {
+        e.preventDefault();
+        setAccountError(''); setAccountSaving(true);
+        const fd = new FormData(e.target);
+        const newUsername = (fd.get('username') || '').trim();
+        const newPassword = fd.get('newPassword') || '';
+        try {
+          const { error: pErr } = await sb.from('profiles').update({
+            height: fd.get('height') ? Number(fd.get('height')) : null,
+            weight: fd.get('weight') ? Number(fd.get('weight')) : null,
+            age: fd.get('age') ? Number(fd.get('age')) : null,
+            gender: fd.get('gender'),
+            disease: fd.get('disease') || '',
+            ai_mode: fd.get('aiMode') || 'normal',
+          }).eq('id', session.user.id);
+          if (pErr) throw pErr;
+
+          if (newUsername && newUsername !== profile.username) {
+            const { error: uErr } = await sb.from('profiles').update({ username: newUsername }).eq('id', session.user.id);
+            if (uErr) throw new Error('이미 사용 중인 계정명입니다.');
+            const { error: eErr } = await sb.auth.updateUser({ email: newUsername + EMAIL_DOMAIN });
+            if (eErr) throw eErr;
+          }
+
+          if (newPassword) {
+            if (newPassword.length < 6) throw new Error('비밀번호는 6자 이상이어야 합니다.');
+            const { error: pwErr } = await sb.auth.updateUser({ password: newPassword });
+            if (pwErr) throw pwErr;
+          }
+
+          setProfile({
+            username: newUsername || profile.username,
+            height: fd.get('height'), weight: fd.get('weight'), age: fd.get('age'),
+            gender: fd.get('gender'), disease: fd.get('disease') || '', aiMode: fd.get('aiMode') || 'normal',
+          });
+          setIsSettingsOpen(false);
+        } catch (err) {
+          setAccountError(translateAuthError(err.message));
+        } finally {
+          setAccountSaving(false);
+        }
+      };
+
+      const handleLogout = async () => { await sb.auth.signOut(); setIsSettingsOpen(false); };
+
+      // ★ 관리자 전용: 전체 회원 목록 불러오기 (is_admin RLS 정책 덕분에 본인 외 행도 조회 가능)
+      const loadMembers = async () => {
+        setIsLoadingMembers(true);
+        const { data, error } = await sb.from('profiles').select('*').order('created_at', { ascending: false });
+        if (error) setSysError(error.message); else setMemberList(data || []);
+        setIsLoadingMembers(false);
+      };
+
+      useEffect(() => {
+        if (isAdminOpen) loadMembers();
+      }, [isAdminOpen]);
+
+      // ★ 관리자 전용: 승인/차단 토글
+      const toggleMemberApproval = async (member) => {
+        setMemberActionId(member.id);
+        const { error } = await sb.from('profiles').update({ is_approved: !member.is_approved }).eq('id', member.id);
+        if (error) setSysError(error.message);
+        else setMemberList(prev => prev.map(m => m.id === member.id ? { ...m, is_approved: !m.is_approved } : m));
+        setMemberActionId(null);
+      };
+
+      // ★ 로그인 / 회원가입
+      const handleAuthSubmit = async (e) => {
+        e.preventDefault();
+        setAuthError(''); setAuthLoading(true);
+        const fd = new FormData(e.target);
+        const username = (fd.get('username') || '').trim();
+        const password = fd.get('password') || '';
+        if (!username || !password) { setAuthError('계정명과 비밀번호를 입력해주세요.'); setAuthLoading(false); return; }
+        try {
+          if (authMode === 'signup') {
+            const { error } = await sb.auth.signUp({
+              email: username + EMAIL_DOMAIN,
+              password,
+              options: {
+                data: {
+                  username,
+                  height: fd.get('height') ? Number(fd.get('height')) : null,
+                  weight: fd.get('weight') ? Number(fd.get('weight')) : null,
+                  age: fd.get('age') ? Number(fd.get('age')) : null,
+                  gender: fd.get('gender') || 'male',
+                  disease: fd.get('disease') || '',
+                  aiMode: fd.get('aiMode') || 'normal',
+                }
+              }
+            });
+            if (error) throw error;
+          } else {
+            const { error } = await sb.auth.signInWithPassword({ email: username + EMAIL_DOMAIN, password });
+            if (error) throw error;
+          }
+        } catch (err) {
+          setAuthError(translateAuthError(err.message));
+        } finally {
+          setAuthLoading(false);
+        }
+      };
+
+      const handleFileSelect = (e, isCamera = false) => {
+        const files = Array.from(e.target.files);
+        if (!files.length) return;
+
+        if (!isCamera && files.length > 3) { setSysError("사진은 최대 3장까지만 업로드할 수 있습니다."); }
+        const selectedFiles = files.slice(0, 3);
+
+        setIsMenuOpen(false); setIsCompressing(true);
+        setTimeout(async () => {
+          try {
+            const base64Arr = await Promise.all(selectedFiles.map(f => compressImage(f)));
+            setDraft({
+                isOpen: true, isEditMode: false, type: 'image', data: base64Arr,
+                naturalText: '', memo: '', category: getDefaultCategoryByTime(),
+                editDate: currentDate, editTime: getCurrentTimeStr(), isCamera: isCamera,
+                bp_sys: '', bp_dia: '', pulse: '', sugar: '', existingFoodName: '', existingIngredients: []
+            });
+          } catch (err) { setSysError(err.message); } finally { setIsCompressing(false); e.target.value = ''; }
+        }, 100);
+      };
+
+      const openTextDraft = () => {
+        setIsMenuOpen(false);
+        setDraft({ isOpen: true, isEditMode: false, type: 'text', data: [], naturalText: '', memo: '', category: getDefaultCategoryByTime(), editDate: currentDate, editTime: getCurrentTimeStr(), isCamera: false, bp_sys: '', bp_dia: '', pulse: '', sugar: '', existingFoodName: '', existingIngredients: [] });
+      };
+
+      const openBiometricsDraft = () => {
+        setIsMenuOpen(false);
+        setDraft({ isOpen: true, isEditMode: false, type: 'biometrics', data: [], naturalText: '', memo: '', category: '생체기록', editDate: currentDate, editTime: getCurrentTimeStr(), isCamera: false, bp_sys: '', bp_dia: '', pulse: '', sugar: '', existingFoodName: '', existingIngredients: [] });
+      };
+
+      const handleEditClick = (log) => {
+        let parsedRaw = { type: 'text', naturalText: log.foodName, memo: '', biometrics: null };
+        try {
+          if (log.rawInput && log.rawInput.startsWith('{')) parsedRaw = JSON.parse(log.rawInput);
+          else if (log.imageUrl) parsedRaw = { type: 'image', memo: log.rawInput || '' };
+        } catch (e) {}
+        const isCustom = !defaultCategories.includes(log.category) && log.category !== '생체기록';
+        const fallbackText = parsedRaw.naturalText || log.foodName;
+        const images = log.imageUrl ? log.imageUrl.split(',') : [];
+
+        setDraft({
+          isOpen: true, isEditMode: true, editLogId: log.id, editDate: log.date, editTime: log.time,
+          type: parsedRaw.type || (log.imageUrl ? 'image' : 'text'), data: images,
+          naturalText: fallbackText, memo: parsedRaw.memo || '', category: isCustom ? '직접입력' : log.category, isCamera: false,
+          bp_sys: parsedRaw.biometrics?.bp_sys || '', bp_dia: parsedRaw.biometrics?.bp_dia || '', pulse: parsedRaw.biometrics?.pulse || '', sugar: parsedRaw.biometrics?.sugar || '',
+          existingFoodName: log.foodName, existingIngredients: log.ingredients
+        });
+        if (isCustom) setCustomCategory(log.category);
+        setIsMenuOpen(false);
+      };
+
+      // ★ 기록 저장/재분석 (구글 앱스스크립트 대신 Supabase Edge Function 호출)
+      const handleUploadConfirm = () => {
+        if (draft.type === 'text' && !draft.naturalText.trim()) return setSysError("내용을 입력해주세요!");
+        if (draft.type === 'biometrics' && !draft.bp_sys && !draft.bp_dia && !draft.pulse && !draft.sugar) return setSysError("최소 하나 이상의 수치를 입력해주세요!");
+
+        const finalCategory = draft.type === 'biometrics' ? '생체기록' : (draft.category === '직접입력' ? (customCategory || '기타') : draft.category);
+
+        const payload = {
+          type: draft.type, base64Images: Array.isArray(draft.data) ? draft.data : [draft.data].filter(Boolean),
+          naturalText: draft.naturalText, memo: draft.memo, date: draft.editDate, time: draft.editTime, category: finalCategory,
+          biometrics: draft.type === 'biometrics' ? { bp_sys: draft.bp_sys ? Number(draft.bp_sys) : null, bp_dia: draft.bp_dia ? Number(draft.bp_dia) : null, pulse: draft.pulse ? Number(draft.pulse) : null, sugar: draft.sugar ? Number(draft.sugar) : null } : null,
+          disease: profile?.disease || '',
+          aiMode: profile?.aiMode || 'normal',
+          existingFoodName: draft.existingFoodName, existingIngredients: draft.existingIngredients
+        };
+        const isEdit = draft.isEditMode; const editId = draft.editLogId;
+
+        setDraft({ isOpen: false, isEditMode: false, type: '', data: [], naturalText: '', memo: '', category: '', bp_sys: '', bp_dia: '', pulse: '', sugar: '', existingFoodName: '', existingIngredients: [] });
+        setSysError("");
+        nudgeViewportRepaint(); // ★ [버그수정] 메인화면 복귀 직후 터치 좌표 어긋남 방지
+
+        const timeoutId = setTimeout(() => {
+          if (isEdit) setReanalyzingId(null); else setIsAnalyzing(false);
+          setSysError("⏳ 서버 통신이 지연되고 있습니다. 잠시 후 시도해주세요.");
+        }, 35000);
+
+        (async () => {
+          try {
+            if (isEdit) {
+              setReanalyzingId(editId);
+              const newData = await callAI('reanalyze', { id: editId, ...payload });
+              clearTimeout(timeoutId);
+              if (newData.date !== currentDate && activeTab === 'home') setLogs(prev => prev.filter(item => item.id !== editId));
+              else setLogs(prev => prev.map(item => item.id === editId ? { ...item, ...newData } : item));
+              setReanalyzingId(null);
+            } else {
+              setIsAnalyzing(true);
+              const newLog = await callAI('analyze', payload);
+              clearTimeout(timeoutId);
+              if (newLog.date === currentDate && activeTab === 'home') setLogs(prev => [newLog, ...prev]);
+              setIsAnalyzing(false);
+            }
+          } catch (err) {
+            clearTimeout(timeoutId);
+            setSysError(err.message);
+            if (isEdit) setReanalyzingId(null); else setIsAnalyzing(false);
+          }
+        })();
+      };
+
+      // ★ 기록 삭제 (본인 스토리지 폴더의 이미지까지 함께 정리)
+      const executeDelete = async (id) => {
+        const prevLogs = [...logs]; setLogs(logs.filter(log => log.id !== id));
+        setDeleteConfirmId(null);
+        try {
+          const target = prevLogs.find(l => l.id === id);
+          if (target && target.imageUrl) {
+            const marker = '/diet-images/';
+            const paths = target.imageUrl.split(',').filter(Boolean).map(url => {
+              const idx = url.indexOf(marker);
+              return idx >= 0 ? url.slice(idx + marker.length) : null;
+            }).filter(Boolean);
+            if (paths.length) await sb.storage.from('diet-images').remove(paths);
+          }
+          const { error } = await sb.from('logs').delete().eq('id', id);
+          if (error) throw error;
+        } catch (err) {
+          setSysError(err.message); setLogs(prevLogs);
+        }
+      };
+
+      const handleGeneratePeriodReport = () => {
+        if(periodLogs.length === 0) return setSysError("분석할 기록이 없습니다.");
+        setIsGeneratingReport(true);
+        const timeoutId = setTimeout(() => {
+          setIsGeneratingReport(false);
+          setSysError("⏳ 리포트 생성에 시간이 오래 걸립니다. 다시 시도해주세요.");
+        }, 35000);
+
+        let summaryData = "";
+        if (statsMode === 'month') {
+           const bioLogs = periodLogs.filter(l => l.category === '생체기록');
+           let sysSum = 0, diaSum = 0, sugarSum = 0, count = 0;
+           bioLogs.forEach(l => {
+              try {
+                  const raw = JSON.parse(l.rawInput);
+                  if(raw.biometrics) {
+                      if (raw.biometrics.bp_sys) sysSum += raw.biometrics.bp_sys;
+                      if (raw.biometrics.bp_dia) diaSum += raw.biometrics.bp_dia;
+                      if (raw.biometrics.sugar) sugarSum += raw.biometrics.sugar;
+                      if (raw.biometrics.bp_sys || raw.biometrics.sugar) count++;
+                  }
+              } catch(e){}
+           });
+           const avgSys = count ? Math.round(sysSum/count) : 0;
+           const avgDia = count ? Math.round(diaSum/count) : 0;
+           const avgSugar = count ? Math.round(sugarSum/count) : 0;
+           const foods = periodLogs.filter(l => l.category !== '생체기록' && l.category !== '운동').map(l => l.foodName).join(', ');
+           const exercises = periodLogs.filter(l => l.category === '운동').map(l => l.foodName).join(', ');
+
+           summaryData = `[${activeRange.label} 패턴 압축 데이터]\n- 해당 기간 주요 식단: ${foods || '없음'}\n- 해당 기간 주요 운동: ${exercises || '없음'}\n- 평균 혈압: ${avgSys ? avgSys : '기록없음'} / ${avgDia ? avgDia : '기록없음'}\n- 평균 혈당: ${avgSugar ? avgSugar : '기록없음'}\n위 압축 데이터를 바탕으로 전반적인 생활 패턴의 장점과 개선점을 의학/영양학적으로 코칭해주세요.`;
+        } else {
+           let summaryLines = periodLogs.map(l => {
+             if (l.category === '생체기록') return `[${l.date} ${l.time}] 생체: ${Array.isArray(l.ingredients) ? l.ingredients.join(', ') : l.ingredients}`;
+             return `[${l.date} ${l.time}] [${l.category}] ${l.foodName}: ${Array.isArray(l.ingredients) ? l.ingredients.join(', ') : l.ingredients}`;
+           });
+           summaryData = `[${activeRange.label} 전체 내역 (시간순)]\n` + summaryLines.join('\n');
+        }
+
+        (async () => {
+          try {
+            const res = await callAI('periodReport', { periodStart: activeRange.start, summaryData, isMonth: statsMode === 'month', disease: profile?.disease, aiMode: profile?.aiMode || 'normal' });
+            clearTimeout(timeoutId); setAiReport(res); setIsGeneratingReport(false);
+          } catch (err) {
+            clearTimeout(timeoutId); setSysError(err.message); setIsGeneratingReport(false);
+          }
+        })();
+      };
+
+      const handleGenerateDailyReport = () => {
+        if(logs.length === 0) return setSysError("분석할 기록이 없습니다. 먼저 기록해주세요.");
+        setIsGeneratingDaily(true);
+        const timeoutId = setTimeout(() => {
+          setIsGeneratingDaily(false);
+          setSysError("⏳ 하루 평가 통신이 지연되고 있습니다. 잠시 후 시도해주세요.");
+        }, 30000);
+
+        let summaryLines = logs.map(l => {
+          if (l.category === '생체기록') return `[${l.time}] 생체: ${Array.isArray(l.ingredients) ? l.ingredients.join(', ') : l.ingredients}`;
+          return `[${l.time}] [${l.category}] ${l.foodName}: ${Array.isArray(l.ingredients) ? l.ingredients.join(', ') : l.ingredients}`;
+        });
+        const summaryData = `기록 내역 (시간순):\n` + summaryLines.join('\n');
+
+        (async () => {
+          try {
+            const res = await callAI('dailyReport', { date: currentDate, summaryData, disease: profile?.disease, aiMode: profile?.aiMode || 'normal' });
+            clearTimeout(timeoutId); setDailyReport(res); setIsGeneratingDaily(false);
+          } catch (err) {
+            clearTimeout(timeoutId); setSysError("하루 평가 실패: " + err.message); setIsGeneratingDaily(false);
+          }
+        })();
+      };
+
+      // ★ 마크다운 리포트 예쁘게 렌더링하는 함수 (카드형 UI)
+      const renderReportHtml = (text) => {
+        if (!text) return null;
+        const sections = text.split('##').filter(s => s.trim() !== '');
+
+        return sections.map((section, idx) => {
+          const lines = section.trim().split('\n');
+          const title = lines[0].replace(/\*\*/g, '').trim();
+          const contentLines = lines.slice(1).join('\n').trim();
+
+          const renderContent = (contentStr) => {
+             const parts = contentStr.split(/(\*\*.*?\*\*)/g);
+             return parts.map((part, i) => {
+               if (part.startsWith('**') && part.endsWith('**')) {
+                 return <strong key={i} className="text-blue-700 font-extrabold">{part.slice(2, -2)}</strong>;
+               }
+               return <span key={i}>{part}</span>;
+             });
+          };
+
+          return (
+            <div key={idx} className="bg-white rounded-2xl p-5 mb-4 shadow-sm border border-gray-100">
+              <h4 className="text-lg font-extrabold text-gray-800 mb-3 border-b-2 border-gray-100 pb-2 flex items-center gap-2">
+                {title}
+              </h4>
+              <div className="text-gray-600 leading-relaxed text-[15px] whitespace-pre-wrap break-keep">
+                {renderContent(contentLines)}
+              </div>
+            </div>
+          );
+        });
+      };
+
+      const getGradeColor = (grade) => {
+        if(grade === 'A') return 'bg-blue-500'; if(grade === 'B') return 'bg-green-500'; if(grade === 'C') return 'bg-yellow-500'; if(grade === 'D') return 'bg-orange-500'; return 'bg-red-500';
+      };
+
+      const getDaysArray = () => {
+        if (!activeRange.start || !activeRange.end) return [];
+        const start = parseDate(activeRange.start);
+        const end = parseDate(activeRange.end);
+        const diffTime = Math.abs(end - start);
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+        return Array.from({length: diffDays});
+      };
+
+      const getChartDays = () => {
+        if (statsMode === 'week') {
+          return getDaysArray().map((_, i) => {
+            const d = parseDate(activeRange.start); d.setDate(d.getDate() + i); return formatDate(d);
+          });
+        } else {
+          const bioDates = new Set();
+          periodLogs.forEach(l => {
+            try {
+              if (l.category === '생체기록') {
+                const raw = JSON.parse(l.rawInput);
+                if (raw.biometrics?.bp_sys || raw.biometrics?.bp_dia || raw.biometrics?.sugar) bioDates.add(l.date);
+              }
+            } catch(e) {}
+          });
+          return Array.from(bioDates).sort();
+        }
+      };
+
+      const chartDays = getChartDays();
+
+      // ★ 로그인 / 회원가입 화면 (기존 최초 온보딩 폼 대체)
+      const AuthForm = () => (
+        <div className="w-full max-w-sm mx-auto">
+          <div className="text-center mb-8"><span className="text-5xl">💪</span><h1 className="text-2xl font-bold mt-4 text-gray-800">나만의 건강 비서</h1></div>
+          <div className="flex gap-2 mb-6 bg-gray-100 p-1 rounded-xl">
+            <button type="button" onClick={() => { setAuthMode('login'); setAuthError(''); }} className={`flex-1 py-2 text-sm font-bold rounded-lg transition ${authMode === 'login' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500'}`}>로그인</button>
+            <button type="button" onClick={() => { setAuthMode('signup'); setAuthError(''); }} className={`flex-1 py-2 text-sm font-bold rounded-lg transition ${authMode === 'signup' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500'}`}>회원가입</button>
+          </div>
+          <form onSubmit={handleAuthSubmit} className="space-y-4">
+            <div>
+              <label className="text-sm font-medium text-gray-600 block mb-1">계정명</label>
+              <input type="text" name="username" required autoCapitalize="none" className="w-full border p-3 rounded-xl bg-gray-50 outline-none" placeholder="영문/숫자 계정명" />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-gray-600 block mb-1">비밀번호</label>
+              <input type="password" name="password" required minLength={6} className="w-full border p-3 rounded-xl bg-gray-50 outline-none" placeholder="6자 이상" />
+            </div>
+
+            {authMode === 'signup' && (
+              <div className="grid grid-cols-2 gap-4 pt-3 border-t border-gray-100">
+                <div><label className="text-sm font-medium text-gray-600 block mb-1">성별</label><select name="gender" defaultValue="male" className="w-full border p-3 rounded-xl bg-gray-50 outline-none"><option value="male">남성</option><option value="female">여성</option></select></div>
+                <div><label className="text-sm font-medium text-gray-600 block mb-1">나이</label><input type="number" name="age" defaultValue={30} className="w-full border p-3 rounded-xl bg-gray-50 outline-none" /></div>
+                <div><label className="text-sm font-medium text-gray-600 block mb-1">키(cm)</label><input type="number" name="height" defaultValue={170} className="w-full border p-3 rounded-xl bg-gray-50 outline-none" /></div>
+                <div><label className="text-sm font-medium text-gray-600 block mb-1">체중(kg)</label><input type="number" name="weight" defaultValue={70} className="w-full border p-3 rounded-xl bg-gray-50 outline-none" /></div>
+                <div className="col-span-2">
+                  <label className="text-sm font-medium text-gray-600 block mb-1">관리 중인 기저질환 (선택)</label>
+                  <input type="text" name="disease" placeholder="예: 당뇨, 고혈압, 통풍 등" className="w-full border p-3 rounded-xl bg-gray-50 outline-none text-sm placeholder-gray-400" />
+                </div>
+                <div className="col-span-2">
+                  <label className="text-sm font-bold text-gray-600 block mb-1">AI 코칭 스타일</label>
+                  <select name="aiMode" defaultValue="normal" className="w-full border p-3 rounded-xl bg-blue-50 outline-none text-sm font-bold text-gray-700">
+                    <option value="normal">⚖️ 프로 코치 (객관적 사실과 대안 제시)</option>
+                    <option value="sparta">🔥 스파르타 (변명 불가! 강력한 팩트 폭격)</option>
+                    <option value="angel">👼 천사 멘토 (따뜻한 위로와 부드러운 권유)</option>
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {authError && <p className="text-sm text-red-600 font-bold text-center">{authError}</p>}
+
+            <button type="submit" disabled={authLoading} className="w-full bg-blue-600 text-white py-4 rounded-xl text-lg font-bold shadow-lg mt-2 disabled:opacity-60">
+              {authLoading ? '처리 중...' : (authMode === 'signup' ? '가입하고 시작하기' : '로그인')}
+            </button>
+          </form>
+        </div>
+      );
+
+      // ★ 내 정보 수정 (계정명/비밀번호 변경 + 로그아웃 포함, 기존 SettingsForm 대체)
+      const SettingsForm = () => (
+        <div className="w-full max-w-sm mx-auto">
+          <div className="text-center mb-8"><span className="text-5xl">💪</span><h1 className="text-2xl font-bold mt-4 text-gray-800">내 정보 수정</h1></div>
+          <form onSubmit={saveProfile} className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="col-span-2">
+                <label className="text-sm font-medium text-gray-600 block mb-1">계정명</label>
+                <input type="text" name="username" defaultValue={profile?.username || ''} autoCapitalize="none" className="w-full border p-3 rounded-xl bg-gray-50 outline-none" />
+              </div>
+              <div className="col-span-2">
+                <label className="text-sm font-medium text-gray-600 block mb-1">새 비밀번호 (변경할 때만 입력)</label>
+                <input type="password" name="newPassword" minLength={6} placeholder="변경하지 않으려면 비워두세요" className="w-full border p-3 rounded-xl bg-gray-50 outline-none" />
+              </div>
+              <div><label className="text-sm font-medium text-gray-600 block mb-1">성별</label><select name="gender" defaultValue={profile?.gender || 'male'} className="w-full border p-3 rounded-xl bg-gray-50 outline-none"><option value="male">남성</option><option value="female">여성</option></select></div>
+              <div><label className="text-sm font-medium text-gray-600 block mb-1">나이</label><input type="number" name="age" defaultValue={profile?.age || 30} className="w-full border p-3 rounded-xl bg-gray-50 outline-none" /></div>
+              <div><label className="text-sm font-medium text-gray-600 block mb-1">키(cm)</label><input type="number" name="height" defaultValue={profile?.height || 170} className="w-full border p-3 rounded-xl bg-gray-50 outline-none" /></div>
+              <div><label className="text-sm font-medium text-gray-600 block mb-1">체중(kg)</label><input type="number" name="weight" defaultValue={profile?.weight || 70} className="w-full border p-3 rounded-xl bg-gray-50 outline-none" /></div>
+              <div className="col-span-2">
+                <label className="text-sm font-medium text-gray-600 block mb-1">관리 중인 기저질환 (선택)</label>
+                <input type="text" name="disease" defaultValue={profile?.disease || ""} placeholder="예: 당뇨, 고혈압, 통풍 등" className="w-full border p-3 rounded-xl bg-gray-50 outline-none text-sm placeholder-gray-400" />
+              </div>
+              <div className="col-span-2">
+                <label className="text-sm font-bold text-gray-600 block mb-1">AI 코칭 스타일</label>
+                <select name="aiMode" defaultValue={profile?.aiMode || 'normal'} className="w-full border p-3 rounded-xl bg-blue-50 outline-none text-sm font-bold text-gray-700 focus:border-blue-500">
+                  <option value="normal">⚖️ 프로 코치 (객관적 사실과 대안 제시)</option>
+                  <option value="sparta">🔥 스파르타 (변명 불가! 강력한 팩트 폭격)</option>
+                  <option value="angel">👼 천사 멘토 (따뜻한 위로와 부드러운 권유)</option>
+                </select>
+                <p className="text-xs text-gray-400 mt-1">기분에 따라 나를 대하는 AI의 피드백 톤을 조절해보세요.</p>
+              </div>
+            </div>
+            {accountError && <p className="text-sm text-red-600 font-bold text-center">{accountError}</p>}
+            <button type="submit" disabled={accountSaving} className="w-full bg-blue-600 text-white py-4 rounded-xl text-lg font-bold shadow-lg mt-6 disabled:opacity-60">{accountSaving ? '저장 중...' : '저장하기'}</button>
+            <button type="button" onClick={() => setIsSettingsOpen(false)} className="w-full bg-gray-200 text-gray-700 py-3 rounded-xl font-bold mt-2">취소</button>
+            <button type="button" onClick={handleLogout} className="w-full bg-red-50 text-red-600 py-3 rounded-xl font-bold mt-2">로그아웃</button>
+          </form>
+        </div>
+      );
+
+      // ★ 관리자 전용 회원관리 패널 (승인 대기/전체 회원 목록 + 승인·차단 토글)
+      const AdminPanel = () => (
+        <div className="w-full max-w-md mx-auto">
+          <div className="flex justify-between items-center mb-6">
+            <h1 className="text-xl font-bold text-gray-800">👑 회원관리</h1>
+            <button onClick={() => setIsAdminOpen(false)} className="text-sm bg-gray-100 text-gray-600 px-3 py-1.5 rounded-lg font-bold">닫기</button>
+          </div>
+          {isLoadingMembers ? (
+            <div className="flex justify-center py-10"><div className="loader"></div></div>
+          ) : (
+            <div className="space-y-3">
+              {memberList.length === 0 && <p className="text-center text-gray-400 py-10">가입한 회원이 없습니다.</p>}
+              {memberList.map(m => (
+                <div key={m.id} className="bg-white border border-gray-100 rounded-2xl p-4 flex items-center justify-between shadow-sm">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-gray-800 truncate">{m.username}</span>
+                      {m.is_admin && <span className="text-[10px] bg-indigo-100 text-indigo-700 font-bold px-1.5 py-0.5 rounded">관리자</span>}
+                    </div>
+                    <p className="text-xs text-gray-400 mt-1">{m.created_at ? String(m.created_at).slice(0, 10) : ''} 가입</p>
+                  </div>
+                  {m.is_admin ? (
+                    <span className="text-xs font-bold text-gray-400 px-3 py-2">-</span>
+                  ) : (
+                    <button
+                      disabled={memberActionId === m.id}
+                      onClick={() => toggleMemberApproval(m)}
+                      className={`text-xs font-bold px-3 py-2 rounded-lg shrink-0 disabled:opacity-50 ${m.is_approved ? 'bg-red-50 text-red-600' : 'bg-blue-600 text-white'}`}
+                    >
+                      {memberActionId === m.id ? '처리 중...' : (m.is_approved ? '사용 차단' : '승인하기')}
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+
+      if (session === undefined) {
+        return <div className="min-h-screen flex items-center justify-center bg-white"><div className="loader"></div></div>;
+      }
+
+      if (!session) {
+        return <div className="min-h-screen flex flex-col items-center justify-center p-5 bg-white"><AuthForm /></div>;
+      }
+
+      if (!profile) {
+        return <div className="min-h-screen flex items-center justify-center bg-white"><div className="loader"></div></div>;
+      }
+
+      // ★ 회원가입은 했지만 아직 관리자 승인 전인 경우 (관리자 본인은 자동 승인되어 여기로 오지 않음)
+      if (!profile.isApproved && !profile.isAdmin) {
+        return (
+          <div className="min-h-screen flex flex-col items-center justify-center p-8 bg-white text-center">
+            <span className="text-5xl mb-4">⏳</span>
+            <h1 className="text-xl font-bold text-gray-800 mb-2">가입 승인 대기 중이에요</h1>
+            <p className="text-sm text-gray-500 leading-relaxed mb-8">관리자가 계정을 승인하면 바로 이용하실 수 있어요.<br/>승인 전까지는 기록 작성이나 AI 코칭을 사용할 수 없습니다.</p>
+            <button onClick={handleLogout} className="text-sm bg-gray-100 text-gray-600 px-5 py-3 rounded-xl font-bold">로그아웃</button>
+          </div>
+        );
+      }
+
+      const displayDateStr = currentDate === formatDate(new Date()) ? `오늘 (${getDayStr(currentDate)})` : `${currentDate} (${getDayStr(currentDate)})`;
+
+      return (
+        <div className="min-h-screen pb-nav max-w-lg mx-auto bg-gray-50 shadow-sm relative overflow-hidden">
+
+          {isSettingsOpen && (
+            <div className="fixed inset-0 bg-white z-50 overflow-y-auto p-5 flex flex-col items-center justify-center animate-fade-in">
+              <SettingsForm />
+            </div>
+          )}
+
+          {isAdminOpen && (
+            <div className="fixed inset-0 bg-gray-50 z-50 overflow-y-auto p-5 animate-fade-in">
+              <AdminPanel />
+            </div>
+          )}
+
+          <div className="bg-white px-5 py-5 shadow-sm sticky top-0 z-20">
+            <div className="flex justify-between items-center mb-5">
+              <h1 className="font-bold text-xl text-gray-800">{activeTab === 'home' ? '🥗 식단 & 건강' : '📊 라이프스타일 통계'}</h1>
+              <div className="flex items-center gap-2">
+                {profile.isAdmin && (
+                  <span className="text-sm bg-indigo-50 text-indigo-700 px-3 py-1.5 rounded-lg font-bold cursor-pointer transition hover:bg-indigo-100" onClick={() => setIsAdminOpen(true)}>
+                    👑 회원관리
+                  </span>
+                )}
+                <span className="text-sm bg-blue-50 text-blue-700 px-3 py-1.5 rounded-lg font-bold cursor-pointer transition hover:bg-blue-100" onClick={() => setIsSettingsOpen(true)}>
+                  ⚙️ 설정
+                </span>
+              </div>
+            </div>
+
+            <div className="flex justify-between items-center bg-gray-50 p-2 rounded-xl border border-gray-200">
+              <button onClick={() => changeDate(-1)} className="p-3 text-gray-500 hover:text-black font-extrabold text-lg">◀</button>
+
+              <div className="relative inline-flex items-center justify-center">
+                 <div className="font-bold text-gray-800 bg-white px-4 py-2 rounded-lg shadow-sm text-sm border border-gray-200 flex items-center gap-2 whitespace-nowrap">
+                   {activeTab === 'home'
+                      ? displayDateStr
+                      : (statsMode === 'month'
+                          ? `${parseDate(currentDate).getFullYear()}년 ${parseDate(currentDate).getMonth() + 1}월`
+                          : getKoreanWeekLabel(currentDate)
+                        )
+                   }
+                   <span className="text-[10px] text-gray-400">▼</span>
+                 </div>
+                 <input
+                  type={activeTab === 'home' ? "date" : (statsMode === 'month' ? "month" : "week")}
+                  value={activeTab === 'home' ? currentDate : (statsMode === 'month' ? currentDate.substring(0,7) : getWeekString(currentDate))}
+                  onChange={handleDatePick}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                />
+              </div>
+
+              <button onClick={() => changeDate(1)} className="p-3 text-gray-500 hover:text-black font-extrabold text-lg">▶</button>
+            </div>
+
+            {activeTab === 'stats' && (
+              <div className="flex gap-2 mt-4 bg-gray-100 p-1 rounded-xl">
+                <button onClick={() => setStatsMode('week')} className={`flex-1 py-2 text-sm font-bold rounded-lg transition ${statsMode === 'week' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}>주간</button>
+                <button onClick={() => setStatsMode('month')} className={`flex-1 py-2 text-sm font-bold rounded-lg transition ${statsMode === 'month' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}>월간</button>
+              </div>
+            )}
+          </div>
+
+          <div className="p-5 space-y-6">
+
+            {activeTab === 'home' && (
+              <>
+                <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100">
+                  {dailyReport ? (
+                    <div className="flex gap-4 items-center">
+                      <div className={`w-16 h-16 rounded-2xl flex items-center justify-center text-3xl font-black text-white shrink-0 shadow-sm ${getGradeColor(dailyReport.grade)}`}>
+                        {dailyReport.grade}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <h3 className="font-bold text-gray-800 text-sm mb-1">오늘의 AI 맞춤 총평</h3>
+                        <p className="text-sm text-gray-600 leading-snug whitespace-pre-wrap">{dailyReport.comment}</p>
+                        <button onClick={handleGenerateDailyReport} className="text-xs text-blue-500 font-bold mt-2 hover:underline flex items-center gap-1">🔄 다시 평가받기</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button onClick={handleGenerateDailyReport} className="w-full flex items-center justify-center gap-2 bg-indigo-50 text-indigo-600 font-bold py-3 rounded-2xl hover:bg-indigo-100 transition">
+                      <span>✨ 이 날의 AI 하루 총평 받기</span>
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex justify-between items-center px-1"><h2 className="font-bold text-lg text-gray-700">타임라인 {isFetching && <span className="text-sm text-blue-500 ml-2 animate-pulse">업데이트 중...</span>}</h2></div>
+
+                {logs.length === 0 && !isFetching && !isAnalyzing && (
+                  <div className="text-center py-16 text-gray-400 bg-white rounded-3xl border-2 border-dashed border-gray-200"><div className="text-5xl mb-3">📝</div><p>아직 기록이 없습니다.</p></div>
+                )}
+
+                {logs.map(log => {
+                  const isEx = log.category === '운동';
+                  const isBio = log.category === '생체기록';
+                  const images = log.imageUrl ? log.imageUrl.split(',') : [];
+
+                  return (
+                    <div key={log.id} className="bg-white p-5 rounded-3xl shadow-sm border border-gray-100 flex gap-4 relative">
+                      <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-2xl shrink-0 ${isEx ? 'bg-green-50' : (isBio ? 'bg-red-50' : (log.isAlcohol ? 'bg-orange-100' : 'bg-orange-50'))}`}>
+                        {isEx ? '🏃‍♂️' : (isBio ? '🩺' : (log.isAlcohol ? '🍺' : '🍽️'))}
+                      </div>
+
+                      <div className="flex-1 min-w-0 flex flex-col justify-start">
+                        <div className="flex justify-between items-start mb-1">
+                          <span className={`text-xs font-bold px-2 py-1 rounded-md flex items-center gap-1 ${isEx ? 'bg-green-100 text-green-700' : (isBio ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600')}`}>
+                            {log.category} • {log.time} {log.isAlcohol && <span className="text-[10px]">🍺</span>}
+                          </span>
+
+                          {deleteConfirmId === log.id ? (
+                            <div className="flex gap-1 items-center bg-red-50 px-2 py-1 rounded-lg">
+                              <span className="text-[10px] text-red-600 font-bold mr-1">삭제?</span>
+                              <button onClick={() => executeDelete(log.id)} className="text-white bg-red-500 hover:bg-red-600 px-2 py-1 rounded text-xs font-bold">네</button>
+                              <button onClick={() => setDeleteConfirmId(null)} className="text-gray-600 bg-gray-200 hover:bg-gray-300 px-2 py-1 rounded text-xs font-bold">아니오</button>
+                            </div>
+                          ) : (
+                            <div className="flex gap-2">
+                              <button onClick={() => handleEditClick(log)} className="text-gray-400 hover:text-blue-500 bg-gray-50 p-1 rounded-lg">✏️</button>
+                              <button onClick={() => setDeleteConfirmId(log.id)} className="text-gray-400 hover:text-red-500 bg-red-50 p-1 rounded-lg">🗑️</button>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="flex mt-1 items-start gap-2 group mb-1">
+                          <h3 className="font-bold text-gray-800 text-lg flex-1 leading-tight">{log.foodName}</h3>
+                        </div>
+
+                        <p className="text-sm font-semibold text-gray-700 mb-2 whitespace-pre-wrap">
+                          {log.ingredients && log.ingredients.length > 0 ? (Array.isArray(log.ingredients) ? log.ingredients.join(' | ') : log.ingredients) : ''}
+                        </p>
+
+                        {images.length > 0 && (
+                          <div className="flex gap-2 mb-3 overflow-x-auto no-scrollbar pt-1">
+                            {images.map((src, i) => (
+                              <img key={i} src={src} className="w-20 h-20 md:w-24 md:h-24 object-cover rounded-2xl shrink-0 border border-gray-100 shadow-sm" />
+                            ))}
+                          </div>
+                        )}
+
+                        <p className="text-sm bg-blue-50 text-blue-800 p-3 rounded-xl leading-snug whitespace-pre-wrap">
+                          {log.analysis}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+
+            {activeTab === 'stats' && (
+              <div className="space-y-6 animate-fade-in">
+                {statsMode === 'week' ? (
+                  <div className="space-y-4">
+                    <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
+                      <h3 className="font-bold text-gray-800 mb-5 flex justify-between items-center">
+                        <span>🏃‍♂️ 이번 주 운동 스탬프</span>
+                        <span className="text-xs font-bold text-green-700 bg-green-100 px-2.5 py-1 rounded-lg shadow-sm">
+                          {getDaysArray().filter((_, i) => {
+                             const d = parseDate(activeRange.start); d.setDate(d.getDate() + i);
+                             return periodLogs.some(l => l.date === formatDate(d) && l.category === '운동');
+                          }).length}일 달성!
+                        </span>
+                      </h3>
+                      <div className="flex justify-between items-center px-1">
+                        {getDaysArray().map((_, i) => {
+                          const d = parseDate(activeRange.start); d.setDate(d.getDate() + i);
+                          const dateStr = formatDate(d);
+                          const hasEx = periodLogs.some(l => l.date === dateStr && l.category === '운동');
+                          return (
+                            <div key={`ex-${dateStr}`} className="flex flex-col items-center gap-2">
+                              <div className={`w-10 h-10 md:w-11 md:h-11 rounded-full flex items-center justify-center text-lg md:text-xl transition-all duration-300 ${hasEx ? 'bg-green-500 text-white shadow-md transform scale-110' : 'bg-gray-50 border-2 border-dashed border-gray-200 text-transparent'}`}>
+                                {hasEx ? '🔥' : ''}
+                              </div>
+                              <span className={`text-[10px] md:text-xs font-bold ${hasEx ? 'text-green-600' : 'text-gray-400'}`}>{['일','월','화','수','목','금','토'][d.getDay()]}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
+                      <h3 className="font-bold text-gray-800 mb-5 flex justify-between items-center">
+                        <span>🍺 이번 주 음주 스탬프</span>
+                        <span className="text-xs font-bold text-orange-700 bg-orange-100 px-2.5 py-1 rounded-lg shadow-sm">
+                          {getDaysArray().filter((_, i) => {
+                             const d = parseDate(activeRange.start); d.setDate(d.getDate() + i);
+                             return periodLogs.some(l => l.date === formatDate(d) && l.isAlcohol);
+                          }).length}일 음주
+                        </span>
+                      </h3>
+                      <div className="flex justify-between items-center px-1">
+                        {getDaysArray().map((_, i) => {
+                          const d = parseDate(activeRange.start); d.setDate(d.getDate() + i);
+                          const dateStr = formatDate(d);
+                          const hasAlc = periodLogs.some(l => l.date === dateStr && l.isAlcohol);
+                          return (
+                            <div key={`alc-${dateStr}`} className="flex flex-col items-center gap-2">
+                              <div className={`w-10 h-10 md:w-11 md:h-11 rounded-full flex items-center justify-center text-lg md:text-xl transition-all duration-300 ${hasAlc ? 'bg-orange-100 text-orange-600 shadow-sm transform scale-110' : 'bg-gray-50 border-2 border-dashed border-gray-200 text-transparent'}`}>
+                                {hasAlc ? '🍺' : ''}
+                              </div>
+                              <span className={`text-[10px] md:text-xs font-bold ${hasAlc ? 'text-orange-600' : 'text-gray-400'}`}>{['일','월','화','수','목','금','토'][d.getDay()]}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex gap-4">
+                    <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100 flex-1 flex flex-col items-center justify-center">
+                      <h3 className="font-bold text-gray-800 mb-1 text-sm">🏃‍♂️ 이번 달 운동</h3>
+                      <div className="text-3xl font-black text-green-500 flex items-baseline mt-2">
+                        {new Set(periodLogs.filter(l => l.category === '운동').map(l => l.date)).size}
+                        <span className="text-sm font-bold text-gray-400 ml-1">일</span>
+                      </div>
+                    </div>
+                    <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100 flex-1 flex flex-col items-center justify-center">
+                      <h3 className="font-bold text-gray-800 mb-1 text-sm">🍺 이번 달 음주</h3>
+                      <div className="text-3xl font-black text-orange-500 flex items-baseline mt-2">
+                        {new Set(periodLogs.filter(l => l.isAlcohol).map(l => l.date)).size}
+                        <span className="text-sm font-bold text-gray-400 ml-1">일</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
+                  <h3 className="font-bold text-gray-800 mb-6 flex justify-between items-center">
+                    <span>🩺 혈압 트렌드</span>
+                  </h3>
+
+                  {chartDays.length === 0 ? (
+                    <div className="flex items-center justify-center h-48 text-gray-400 text-sm border-b-2 border-gray-100 pb-2 bg-gray-50/50 rounded-xl">데이터가 없습니다.</div>
+                  ) : (
+                    <div className="relative w-full pt-2">
+                      <div className="absolute top-2 left-0 right-0 h-48 pointer-events-none z-0">
+                        <div className="absolute left-0 right-0 border-t border-dashed border-green-300" style={{top: '50%'}}></div>
+                        <div className="absolute left-0 z-20 -translate-y-1/2" style={{top: '50%'}}>
+                          <span className="text-[10px] text-green-600 bg-white/90 px-1 rounded shadow-sm font-bold backdrop-blur-sm">120</span>
+                        </div>
+                        <div className="absolute left-0 right-0 border-t border-dashed border-green-300" style={{top: '83.3%'}}></div>
+                        <div className="absolute left-0 z-20 -translate-y-1/2" style={{top: '83.3%'}}>
+                          <span className="text-[10px] text-green-600 bg-white/90 px-1 rounded shadow-sm font-bold backdrop-blur-sm">80</span>
+                        </div>
+                        <div className="absolute bottom-0 left-0 right-0 border-b-2 border-gray-100"></div>
+                      </div>
+
+                      <div className="overflow-x-auto no-scrollbar pb-8 relative z-10">
+                        <div className="flex items-end h-48 px-6 min-w-max relative">
+                          {chartDays.map((dateStr) => {
+                            const dayLogs = periodLogs.filter(l => l.date === dateStr && l.category === '생체기록');
+                            let sysSum = 0, diaSum = 0, count = 0;
+                            dayLogs.forEach(l => {
+                              try {
+                                const raw = JSON.parse(l.rawInput);
+                                if(raw.biometrics?.bp_sys && raw.biometrics?.bp_dia) { sysSum += raw.biometrics.bp_sys; diaSum += raw.biometrics.bp_dia; count++; }
+                              } catch(e){}
+                            });
+                            const avgSys = count ? Math.round(sysSum/count) : null;
+                            const avgDia = count ? Math.round(diaSum/count) : null;
+                            const topPos = avgSys ? Math.max(0, Math.min(100, ((180 - avgSys) / 120) * 100)) : 100;
+                            const botPos = avgDia ? Math.max(0, Math.min(100, ((180 - avgDia) / 120) * 100)) : 100;
+                            const height = botPos - topPos;
+                            const d = parseDate(dateStr);
+                            const gapClass = statsMode === 'month' ? 'mx-3' : 'flex-1 mx-1';
+
+                            return (
+                              <div key={`bp-${dateStr}`} className={`flex flex-col items-center group relative h-full z-10 w-8 ${gapClass}`}>
+                                {avgSys && avgDia && (
+                                  <div className="w-full flex justify-center items-start h-full relative">
+                                    <div className="opacity-0 group-hover:opacity-100 absolute bg-gray-800 text-white text-[11px] px-2 py-1 rounded whitespace-nowrap z-50 transition-opacity pointer-events-none shadow-md font-bold"
+                                         style={{ top: `calc(${topPos + height/2}%)`, left: '50%', transform: 'translate(-50%, -50%)' }}>
+                                      {avgSys}/{avgDia} {count > 1 ? `(${count}회)` : ''}
+                                    </div>
+                                    <div className="absolute w-[2px] bg-red-200 border-l border-dashed border-red-400" style={{top: `${topPos}%`, height: `${height}%`}}></div>
+                                    <div className="absolute w-2 h-2 rounded-full bg-red-500 shadow-sm" style={{top: `calc(${topPos}% - 4px)`}}></div>
+                                    <div className="absolute w-2 h-2 rounded-full bg-blue-500 shadow-sm" style={{top: `calc(${botPos}% - 4px)`}}></div>
+                                  </div>
+                                )}
+                                <span className="text-[10px] text-gray-500 mt-2 absolute -bottom-6 whitespace-nowrap font-medium">
+                                  {statsMode === 'month' ? `${d.getMonth()+1}/${d.getDate()}` : ['일','월','화','수','목','금','토'][d.getDay()]}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  <div className="flex justify-center gap-4 mt-2 text-xs font-medium text-gray-500">
+                    <span className="flex items-center"><div className="w-2 h-2 rounded-full bg-red-500 mr-1"></div> 수축기</span>
+                    <span className="flex items-center"><div className="w-2 h-2 rounded-full bg-blue-500 mr-1"></div> 이완기</span>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
+                  <h3 className="font-bold text-gray-800 mb-6 flex justify-between items-center">
+                    <span>🩸 공복 혈당 트렌드</span>
+                  </h3>
+                  {chartDays.length === 0 ? (
+                    <div className="flex items-center justify-center h-48 text-gray-400 text-sm border-b-2 border-gray-100 pb-2 bg-gray-50/50 rounded-xl">데이터가 없습니다.</div>
+                  ) : (
+                    <div className="relative w-full pt-2">
+                      <div className="absolute top-2 left-0 right-0 h-40 pointer-events-none z-0">
+                        <div className="absolute left-0 right-0 border-t border-dashed border-pink-300" style={{top: '49.3%'}}></div>
+                        <div className="absolute left-0 z-20 -translate-y-1/2" style={{top: '49.3%'}}>
+                          <span className="text-[10px] text-pink-500 bg-white/90 px-1 rounded shadow-sm font-bold backdrop-blur-sm">126</span>
+                        </div>
+                        <div className="absolute left-0 right-0 border-t border-dashed border-green-300" style={{top: '66.7%'}}></div>
+                        <div className="absolute left-0 z-20 -translate-y-1/2" style={{top: '66.7%'}}>
+                          <span className="text-[10px] text-pink-500 bg-white/90 px-1 rounded shadow-sm font-bold backdrop-blur-sm">100</span>
+                        </div>
+                        <div className="absolute bottom-0 left-0 right-0 border-b-2 border-gray-100"></div>
+                      </div>
+
+                      <div className="overflow-x-auto no-scrollbar pb-8 relative z-10">
+                        <div className="flex items-end h-40 px-6 min-w-max relative">
+                          {chartDays.map((dateStr) => {
+                            const dayLogs = periodLogs.filter(l => l.date === dateStr && l.category === '생체기록');
+                            let sugarSum = 0, count = 0;
+                            dayLogs.forEach(l => {
+                              try { const raw = JSON.parse(l.rawInput); if(raw.biometrics?.sugar) { sugarSum += raw.biometrics.sugar; count++; } } catch(e){}
+                            });
+
+                            const avgSugar = count ? Math.round(sugarSum/count) : null;
+                            const topPos = avgSugar ? Math.max(0, Math.min(100, ((200 - avgSugar) / 150) * 100)) : null;
+                            const d = parseDate(dateStr);
+                            const gapClass = statsMode === 'month' ? 'mx-3' : 'flex-1 mx-1';
+
+                            return (
+                              <div key={`sugar-${dateStr}`} className={`flex flex-col items-center group relative h-full z-10 w-8 ${gapClass}`}>
+                                {avgSugar && (
+                                  <div className="w-full flex justify-center items-start h-full relative">
+                                    <div className="opacity-0 group-hover:opacity-100 absolute bg-gray-800 text-white text-[11px] px-2 py-1 rounded whitespace-nowrap z-50 transition-opacity pointer-events-none shadow-md font-bold"
+                                         style={{ top: `calc(${topPos}% - 24px)`, left: '50%', transform: 'translateX(-50%)' }}>
+                                      {avgSugar} {count > 1 ? `(${count}회)` : ''}
+                                    </div>
+                                    <div className="absolute w-2 h-2 rounded-full bg-pink-500 shadow-sm" style={{top: `calc(${topPos}% - 4px)`}}></div>
+                                    <div className="absolute w-[2px] bg-pink-100" style={{top: `${topPos}%`, height: `calc(100% - ${topPos}%)`}}></div>
+                                  </div>
+                                )}
+                                <span className="text-[10px] text-gray-500 mt-2 absolute -bottom-6 whitespace-nowrap font-medium">
+                                  {statsMode === 'month' ? `${d.getMonth()+1}/${d.getDate()}` : ['일','월','화','수','목','금','토'][d.getDay()]}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="bg-gradient-to-br from-blue-600 to-indigo-700 rounded-3xl p-1 shadow-md">
+                  <div className="bg-gray-50 rounded-[22px] p-4 h-full">
+                    <div className="px-2 pt-2 mb-4">
+                      <h3 className="font-bold text-xl text-gray-800 mb-2">🤖 {statsMode === 'month' ? '월간' : '주간'} AI 심층 리포트</h3>
+                      <p className="text-sm text-gray-500">건강 패턴과 식습관을 종합적으로 분석해 드립니다.</p>
+                    </div>
+
+                    {!aiReport && !isGeneratingReport ? (
+                      <button onClick={handleGeneratePeriodReport} className="w-full bg-blue-100 text-blue-700 font-bold py-4 rounded-xl hover:bg-blue-200 transition shadow-sm mb-2">
+                        ✨ 맞춤형 {statsMode === 'month' ? '월간' : '주간'} 코칭 리포트 발급받기
+                      </button>
+                    ) : aiReport ? (
+                      <div>
+                        {renderReportHtml(aiReport)}
+                        <div className="mt-4 pt-4 border-t border-gray-200 flex justify-end px-2">
+                           <button onClick={handleGeneratePeriodReport} className="text-sm text-blue-600 font-bold hover:underline flex items-center gap-1">
+                             🔄 최신 데이터로 다시 평가받기
+                           </button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+              </div>
+            )}
+          </div>
+
+          {sysError && (
+             <div className="fixed top-5 left-5 right-5 bg-red-600 text-white p-4 rounded-2xl shadow-xl z-[100] flex justify-between items-center">
+               <span className="text-sm font-medium">{sysError}</span>
+               <button onClick={()=>setSysError("")} className="ml-4 font-bold text-lg">✕</button>
+             </div>
+          )}
+
+          {isCompressing && (
+            <div className="fixed inset-0 z-[100] bg-black/60 flex flex-col items-center justify-center text-white">
+              <div className="loader border-4 border-white border-t-transparent w-12 h-12 mb-4"></div>
+              <p className="font-bold">사진 최적화 중...</p>
+            </div>
+          )}
+
+          {(isAnalyzing || reanalyzingId || isGeneratingReport || isGeneratingDaily) && (
+            <div className="fixed inset-0 z-[100] bg-black/70 flex flex-col items-center justify-center text-white backdrop-blur-sm touch-none">
+              <div className="loader border-4 border-white border-t-transparent w-16 h-16 mb-6"></div>
+              <p className="text-xl font-bold animate-pulse text-center">
+                {isGeneratingReport ? '🤖 AI가 거시적 데이터를 분석 중입니다...' :
+                 isGeneratingDaily ? '🤖 AI가 하루 총평을 작성 중입니다...' :
+                 '🤖 AI가 꼼꼼하게 분석 중입니다...'}
+              </p>
+              <p className="text-sm mt-2 text-gray-300">화면을 끄지 말고 잠시만 기다려주세요</p>
+            </div>
+          )}
+
+          <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-6 py-2 pb-safe shadow-[0_-10px_40px_rgba(0,0,0,0.05)] z-40">
+            <div className="max-w-lg mx-auto flex justify-between items-center relative">
+              <button onClick={() => { if(activeTab === 'home') setCurrentDate(formatDate(new Date())); else setActiveTab('home'); }} className={`flex flex-col items-center p-2 flex-1 transition ${activeTab === 'home' ? 'text-blue-600' : 'text-gray-400 hover:text-gray-600'}`}>
+                <span className="text-2xl mb-1">🏠</span>
+                <span className="text-xs font-bold">홈</span>
+              </button>
+              <div className="flex-1 flex justify-center relative">
+                <button onClick={() => setIsMenuOpen(!isMenuOpen)} className={`absolute -top-8 w-14 h-14 bg-blue-600 text-white rounded-full shadow-lg flex items-center justify-center text-3xl transition-transform ${isMenuOpen ? 'rotate-45 bg-gray-700' : 'hover:scale-105 active:scale-95'}`}>+</button>
+              </div>
+              <button onClick={() => setActiveTab('stats')} className={`flex flex-col items-center p-2 flex-1 transition ${activeTab === 'stats' ? 'text-blue-600' : 'text-gray-400 hover:text-gray-600'}`}>
+                <span className="text-2xl mb-1">📊</span>
+                <span className="text-xs font-bold">통계</span>
+              </button>
+            </div>
+          </div>
+
+          {isMenuOpen && (
+            <>
+              <div className="fixed inset-0 bg-black/20 z-30" onClick={() => setIsMenuOpen(false)}></div>
+              <div className="fixed bottom-24 left-1/2 -translate-x-1/2 flex flex-col gap-3 z-40 animate-fade-in-up w-64">
+                <button onClick={openBiometricsDraft} className="flex justify-center items-center gap-3 bg-red-50 text-red-600 px-5 py-3 rounded-full shadow-xl border border-red-200 font-bold whitespace-nowrap hover:bg-red-100 transition">
+                  <span>🩺 생체 수치 직접 입력</span>
+                </button>
+                <button onClick={openTextDraft} className="flex justify-center items-center gap-3 bg-white px-5 py-3 rounded-full shadow-xl border border-gray-100 text-gray-700 font-bold whitespace-nowrap hover:bg-gray-50 transition">
+                  <span>✍️ 식단/운동 한 줄 기록</span>
+                </button>
+                <label className="flex justify-center items-center gap-3 bg-white px-5 py-3 rounded-full shadow-xl border border-gray-100 text-gray-700 font-bold whitespace-nowrap cursor-pointer hover:bg-gray-50 transition">
+                  <span>🖼️ 갤러리 (최대 3장)</span>
+                  <input type="file" accept="image/*" multiple className="hidden" onChange={(e) => handleFileSelect(e, false)} />
+                </label>
+                <label className="flex justify-center items-center gap-3 bg-blue-600 text-white px-5 py-3 rounded-full shadow-xl border border-blue-500 font-bold whitespace-nowrap cursor-pointer hover:bg-blue-700 transition">
+                  <span>📷 지금 촬영 (AI 분석)</span>
+                  <input type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => handleFileSelect(e, true)} />
+                </label>
+              </div>
+            </>
+          )}
+
+          {draft.isOpen && (
+            <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 touch-none">
+              <form onSubmit={(e) => { e.preventDefault(); handleUploadConfirm(); }} className="bg-white rounded-3xl w-full max-w-md p-6 shadow-2xl max-h-[90vh] overflow-y-auto no-scrollbar pointer-events-auto">
+                <h2 className="text-xl font-bold text-gray-800 mb-5">
+                  {draft.isEditMode ? '✏️ 기록 수정' : (draft.type === 'biometrics' ? '🩺 생체 기록' : (draft.type === 'image' ? '📸 사진 기록' : '✍️ 한 줄 기록'))}
+                </h2>
+
+                <div className="mb-6 flex gap-3">
+                  <div className="flex-1">
+                    <label className="text-sm font-bold text-gray-600 mb-2 block">날짜 지정</label>
+                    <input type="date" value={draft.editDate} onChange={e => setDraft({...draft, editDate: e.target.value})} onBlur={handleInputBlur} className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3 outline-none focus:border-blue-500 text-sm" />
+                  </div>
+                  <div className="flex-1">
+                    <label className="text-sm font-bold text-gray-600 mb-2 block">시간 지정</label>
+                    {draft.isCamera && !draft.isEditMode ? (
+                      <div className="w-full bg-gray-100 border border-gray-200 rounded-xl p-3 text-gray-500 font-medium text-center text-sm cursor-not-allowed">{draft.editTime} (자동)</div>
+                    ) : (
+                      <input type="time" value={draft.editTime} onChange={e => setDraft({...draft, editTime: e.target.value})} onBlur={handleInputBlur} className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3 outline-none focus:border-blue-500 text-sm" />
+                    )}
+                  </div>
+                </div>
+
+                {draft.type !== 'biometrics' && (
+                  <div className="mb-6">
+                    <label className="text-sm font-bold text-gray-600 mb-2 block">무엇을 하셨나요?</label>
+                    <div className="flex flex-wrap gap-2">
+                      {defaultCategories.filter(c => c !== '생체기록').map(cat => (
+                        <button type="button" key={cat} onClick={() => setDraft({...draft, category: cat})} className={`px-4 py-2 rounded-full text-sm font-bold transition ${draft.category === cat ? (cat === '운동' ? 'bg-green-500 text-white' : 'bg-blue-600 text-white') : 'bg-gray-100 text-gray-600'}`}>
+                          {cat === '운동' ? '🏃‍♂️ ' : ''}{cat}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {draft.type === 'biometrics' && (
+                  <div className="mb-6 space-y-4">
+                    <div className="flex gap-3">
+                      <div className="flex-1">
+                        <label className="text-sm font-bold text-gray-600 mb-1 block">수축기 (최고혈압)</label>
+                        <input type="number" placeholder="예: 120" value={draft.bp_sys} onChange={e => setDraft({...draft, bp_sys: e.target.value})} onBlur={handleInputBlur} className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3 outline-none focus:border-red-500 text-base" />
+                      </div>
+                      <div className="flex-1">
+                        <label className="text-sm font-bold text-gray-600 mb-1 block">이완기 (최저혈압)</label>
+                        <input type="number" placeholder="예: 80" value={draft.bp_dia} onChange={e => setDraft({...draft, bp_dia: e.target.value})} onBlur={handleInputBlur} className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3 outline-none focus:border-blue-500 text-base" />
+                      </div>
+                    </div>
+                    <div className="flex gap-3">
+                      <div className="flex-1">
+                        <label className="text-sm font-bold text-gray-600 mb-1 block">맥박 (bpm)</label>
+                        <input type="number" placeholder="예: 70" value={draft.pulse} onChange={e => setDraft({...draft, pulse: e.target.value})} onBlur={handleInputBlur} className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3 outline-none focus:border-pink-500 text-base" />
+                      </div>
+                      <div className="flex-1">
+                        <label className="text-sm font-bold text-gray-600 mb-1 block">공복 혈당 (mg/dL)</label>
+                        <input type="number" placeholder="예: 95" value={draft.sugar} onChange={e => setDraft({...draft, sugar: e.target.value})} onBlur={handleInputBlur} className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3 outline-none focus:border-green-500 text-base" />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {draft.type === 'image' && draft.data && draft.data.length > 0 && (
+                  <div className="mb-5">
+                    <div className="flex gap-2 mb-3 overflow-x-auto no-scrollbar">
+                      {draft.data.map((src, i) => (
+                        <img key={i} src={src} className="w-32 h-32 object-cover rounded-2xl bg-gray-100 shrink-0 border border-gray-200" />
+                      ))}
+                    </div>
+                    <input type="text" placeholder={draft.category === '운동' ? "추가 메모 (예: 스쿼트 50개 추가함)" : "추가 메모 (예: 밥은 반 공기만 먹음)"} value={draft.memo} onChange={e => setDraft({...draft, memo: e.target.value})} onBlur={handleInputBlur} className="w-full bg-gray-50 border border-gray-200 rounded-xl p-4 outline-none focus:border-blue-500 text-sm" />
+                  </div>
+                )}
+
+                {draft.type === 'text' && (
+                  <div className="mb-5">
+                    <textarea
+                      placeholder={draft.category === '운동' ? "예: 런닝머신 30분 뛰었어" : "예: 아침으로 사과 반 개 먹었어"}
+                      value={draft.naturalText} onChange={e => setDraft({...draft, naturalText: e.target.value})} onBlur={handleInputBlur}
+                      onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleUploadConfirm(); } }}
+                      className="w-full bg-gray-50 border border-gray-200 p-4 rounded-2xl outline-none focus:border-blue-500 h-32 resize-none text-base leading-relaxed"
+                    />
+                  </div>
+                )}
+
+                <div className="flex gap-3">
+                  <button type="button" onClick={() => { setDraft({isOpen: false}); nudgeViewportRepaint(); }} className="flex-1 py-4 rounded-xl font-bold bg-gray-100 text-gray-600">취소</button>
+                  <button type="submit" className={`flex-1 py-4 rounded-xl font-bold text-white shadow-md ${draft.type === 'biometrics' ? 'bg-red-500' : (draft.category === '운동' ? 'bg-green-500' : 'bg-blue-600')}`}>
+                    {draft.isEditMode ? '수정 및 코칭받기 🔄' : '기록 및 코칭받기 🚀'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
