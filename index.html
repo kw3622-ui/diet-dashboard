@@ -197,6 +197,7 @@
       const [isFetching, setIsFetching] = useState(true);
       const [isAnalyzing, setIsAnalyzing] = useState(false);
       const [sysError, setSysError] = useState("");
+      const [sysNotice, setSysNotice] = useState("");
 
       const [reanalyzingId, setReanalyzingId] = useState(null);
       const [deleteConfirmId, setDeleteConfirmId] = useState(null);
@@ -221,6 +222,7 @@
       const [memberList, setMemberList] = useState([]);
       const [isLoadingMembers, setIsLoadingMembers] = useState(false);
       const [memberActionId, setMemberActionId] = useState(null);
+      const [deleteMemberConfirmId, setDeleteMemberConfirmId] = useState(null);
 
       const [draft, setDraft] = useState({
         isOpen: false, isEditMode: false, editLogId: null, editDate: '', editTime: '',
@@ -327,6 +329,12 @@
         }
       };
 
+      // ★ 짧게 떴다 사라지는 성공 안내 배너
+      const showNotice = (msg) => {
+        setSysNotice(msg);
+        setTimeout(() => setSysNotice(""), 2500);
+      };
+
       // ★ 계정 정보 저장 (프로필 + 계정명 + 비밀번호, 기존 SettingsForm 대체)
       const saveProfile = async (e) => {
         e.preventDefault();
@@ -369,6 +377,7 @@
             });
           }
           setIsSettingsOpen(false);
+          showNotice('✅ 수정했습니다.');
         } catch (err) {
           setAccountError(translateAuthError(err.message));
         } finally {
@@ -397,6 +406,21 @@
         if (error) setSysError(error.message);
         else setMemberList(prev => prev.map(m => m.id === member.id ? { ...m, is_approved: !m.is_approved } : m));
         setMemberActionId(null);
+      };
+
+      // ★ 관리자 전용: 회원 삭제 (계정 + 프로필 + 기록 + 사진까지 서버에서 완전 삭제)
+      const handleDeleteMember = async (member) => {
+        setMemberActionId(member.id);
+        setDeleteMemberConfirmId(null);
+        try {
+          await callAI('deleteUser', { targetUserId: member.id });
+          setMemberList(prev => prev.filter(m => m.id !== member.id));
+          showNotice(`🗑️ ${member.username}님 계정을 삭제했습니다.`);
+        } catch (err) {
+          setSysError(err.message);
+        } finally {
+          setMemberActionId(null);
+        }
       };
 
       // ★ 로그인 / 회원가입
@@ -809,14 +833,29 @@
                   </div>
                   {m.is_admin ? (
                     <span className="text-xs font-bold text-gray-400 px-3 py-2">-</span>
+                  ) : deleteMemberConfirmId === m.id ? (
+                    <div className="flex gap-1 items-center bg-red-50 px-2 py-1 rounded-lg shrink-0">
+                      <span className="text-[10px] text-red-600 font-bold mr-1">삭제?</span>
+                      <button disabled={memberActionId === m.id} onClick={() => handleDeleteMember(m)} className="text-white bg-red-500 hover:bg-red-600 px-2 py-1 rounded text-xs font-bold disabled:opacity-50">네</button>
+                      <button onClick={() => setDeleteMemberConfirmId(null)} className="text-gray-600 bg-gray-200 hover:bg-gray-300 px-2 py-1 rounded text-xs font-bold">아니오</button>
+                    </div>
                   ) : (
-                    <button
-                      disabled={memberActionId === m.id}
-                      onClick={() => toggleMemberApproval(m)}
-                      className={`text-xs font-bold px-3 py-2 rounded-lg shrink-0 disabled:opacity-50 ${m.is_approved ? 'bg-red-50 text-red-600' : 'bg-blue-600 text-white'}`}
-                    >
-                      {memberActionId === m.id ? '처리 중...' : (m.is_approved ? '사용 차단' : '승인하기')}
-                    </button>
+                    <div className="flex gap-2 shrink-0">
+                      <button
+                        disabled={memberActionId === m.id}
+                        onClick={() => toggleMemberApproval(m)}
+                        className={`text-xs font-bold px-3 py-2 rounded-lg disabled:opacity-50 ${m.is_approved ? 'bg-red-50 text-red-600' : 'bg-blue-600 text-white'}`}
+                      >
+                        {memberActionId === m.id ? '처리 중...' : (m.is_approved ? '사용 차단' : '승인하기')}
+                      </button>
+                      <button
+                        disabled={memberActionId === m.id}
+                        onClick={() => setDeleteMemberConfirmId(m.id)}
+                        className="text-xs font-bold px-2 py-2 rounded-lg bg-gray-50 text-gray-400 hover:text-red-500 hover:bg-red-50 disabled:opacity-50"
+                      >
+                        🗑️
+                      </button>
+                    </div>
                   )}
                 </div>
               ))}
@@ -1236,6 +1275,13 @@
              <div className="fixed top-5 left-5 right-5 bg-red-600 text-white p-4 rounded-2xl shadow-xl z-[100] flex justify-between items-center">
                <span className="text-sm font-medium">{sysError}</span>
                <button onClick={()=>setSysError("")} className="ml-4 font-bold text-lg">✕</button>
+             </div>
+          )}
+
+          {sysNotice && (
+             <div className="fixed top-5 left-5 right-5 bg-green-600 text-white p-4 rounded-2xl shadow-xl z-[100] flex justify-between items-center animate-fade-in">
+               <span className="text-sm font-medium">{sysNotice}</span>
+               <button onClick={()=>setSysNotice("")} className="ml-4 font-bold text-lg">✕</button>
              </div>
           )}
 
