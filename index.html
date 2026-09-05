@@ -51,7 +51,6 @@
       time: String(row.log_time || '').slice(0, 5),
       category: row.category,
       foodName: row.food_name,
-      calories: 0,
       ingredients: row.ingredients || [],
       analysis: row.analysis,
       imageUrl: (row.image_urls || []).join(','),
