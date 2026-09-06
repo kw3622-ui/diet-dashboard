@@ -58,6 +58,19 @@
       isAlcohol: !!row.is_alcohol,
     });
 
+    // 페이지를 처음 열 때, 기기 시계가 서버 시각보다 살짝 느린 경우 방금 발급된 로그인 토큰이
+    // "미래에 발급된 것"처럼 보여 PostgREST가 요청을 거부하는 경우가 있음 ("JWT issued at future").
+    // 새로고침하면 사라지는 일시적인 현상이라, 이 에러를 감지하면 잠깐 기다렸다가 조용히 한 번 재시도한다.
+    const isClockSkewAuthError = (msg) => !!msg && /jwt issued at future/i.test(msg);
+    const withAuthRetry = async (queryFn) => {
+      let result = await queryFn();
+      if (result.error && isClockSkewAuthError(result.error.message)) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        result = await queryFn();
+      }
+      return result;
+    };
+
     // Gemini 호출은 API 키를 숨기기 위해 Supabase Edge Function(diet-ai)을 통해서만 수행
     const callAI = async (action, payload) => {
       const { data: { session } } = await sb.auth.getSession();
@@ -269,7 +282,7 @@
       // ★ 세션이 있으면 profiles 테이블에서 내 프로필 로드 (기존 localStorage 'dietProfile' 대체)
       useEffect(() => {
         if (!session) { setProfile(null); return; }
-        sb.from('profiles').select('*').eq('id', session.user.id).single().then(({ data, error }) => {
+        withAuthRetry(() => sb.from('profiles').select('*').eq('id', session.user.id).single()).then(({ data, error }) => {
           if (!error && data) {
             setProfile({
               username: data.username, height: data.height, weight: data.weight, age: data.age,
@@ -293,7 +306,9 @@
 
       const fetchLogs = async (date) => {
         setIsFetching(true); setDailyReport(null);
-        const { data, error } = await sb.from('logs').select('*').eq('log_date', date).order('log_time', { ascending: false });
+        const { data, error } = await withAuthRetry(() =>
+          sb.from('logs').select('*').eq('log_date', date).order('log_time', { ascending: false })
+        );
         if (error) setSysError(error.message); else setLogs((data || []).map(mapLogRow));
         setIsFetching(false);
         const { data: dr } = await sb.from('daily_reports').select('*').eq('report_date', date).maybeSingle();
@@ -302,7 +317,9 @@
 
       const fetchPeriodLogs = async (startStr, endStr) => {
         setIsFetching(true); setAiReport("");
-        const { data, error } = await sb.from('logs').select('*').gte('log_date', startStr).lte('log_date', endStr).order('log_date', { ascending: false }).order('log_time', { ascending: false });
+        const { data, error } = await withAuthRetry(() =>
+          sb.from('logs').select('*').gte('log_date', startStr).lte('log_date', endStr).order('log_date', { ascending: false }).order('log_time', { ascending: false })
+        );
         if (error) setSysError(error.message); else setPeriodLogs((data || []).map(mapLogRow));
         setIsFetching(false);
         const { data: pr } = await sb.from('period_reports').select('*').eq('period_start', startStr).eq('is_month', statsMode === 'month').maybeSingle();
