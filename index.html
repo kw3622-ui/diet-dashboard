@@ -298,16 +298,21 @@
       }, [session]);
 
       // ★ 자주 먹는 음식 계산 (최근 30일, 운동/생체기록 제외, 빈도순 상위 20개)
+      // food_name은 AI가 매번 새로 지어내는 "메인 타이틀"이라 그대로 쓰면 안 되고,
+      // 실제 개별 음식명은 ingredients 배열에 "음식명(재료들)" 형태로 들어있어 그 앞부분만 추출한다.
       const fetchFrequentFoods = async () => {
         const since = new Date(); since.setDate(since.getDate() - 30);
-        const { data, error } = await sb.from('logs').select('food_name, category').gte('log_date', formatDate(since));
+        const { data, error } = await sb.from('logs').select('ingredients, category').gte('log_date', formatDate(since));
         if (error || !data) return;
         const counts = {};
         data.forEach(row => {
           if (row.category === '운동' || row.category === '생체기록') return;
-          const name = (row.food_name || '').trim();
-          if (!name) return;
-          counts[name] = (counts[name] || 0) + 1;
+          (row.ingredients || []).forEach(item => {
+            const raw = String(item || '');
+            const name = (raw.includes('(') ? raw.slice(0, raw.indexOf('(')) : raw).trim();
+            if (!name) return;
+            counts[name] = (counts[name] || 0) + 1;
+          });
         });
         const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 20).map(([name]) => name);
         setFrequentFoods(sorted);
