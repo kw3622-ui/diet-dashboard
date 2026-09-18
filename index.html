@@ -245,7 +245,7 @@
       const [draft, setDraft] = useState({
         isOpen: false, isEditMode: false, editLogId: null, editDate: '', editTime: '',
         type: '', data: [], naturalText: '', memo: '', category: '점심식사', isCamera: false,
-        bp_sys: '', bp_dia: '', pulse: '', sugar: '', existingFoodName: '', existingIngredients: []
+        bp_sys: '', bp_dia: '', pulse: '', sugar: '', weight: '', sleep_hours: '', existingFoodName: '', existingIngredients: []
       });
 
       // ★ 자주 먹는 음식 (최근 30일 기록 기준 빈도순, 입력창 위 칩으로 표시)
@@ -544,7 +544,7 @@
                 isOpen: true, isEditMode: false, type: 'image', data: base64Arr,
                 naturalText: '', memo: '', category: getDefaultCategoryByTime(),
                 editDate: currentDate, editTime: getCurrentTimeStr(), isCamera: isCamera,
-                bp_sys: '', bp_dia: '', pulse: '', sugar: '', existingFoodName: '', existingIngredients: []
+                bp_sys: '', bp_dia: '', pulse: '', sugar: '', weight: '', sleep_hours: '', existingFoodName: '', existingIngredients: []
             });
           } catch (err) { setSysError(err.message); } finally { setIsCompressing(false); e.target.value = ''; }
         }, 100);
@@ -552,12 +552,12 @@
 
       const openTextDraft = () => {
         setIsMenuOpen(false);
-        setDraft({ isOpen: true, isEditMode: false, type: 'text', data: [], naturalText: '', memo: '', category: getDefaultCategoryByTime(), editDate: currentDate, editTime: getCurrentTimeStr(), isCamera: false, bp_sys: '', bp_dia: '', pulse: '', sugar: '', existingFoodName: '', existingIngredients: [] });
+        setDraft({ isOpen: true, isEditMode: false, type: 'text', data: [], naturalText: '', memo: '', category: getDefaultCategoryByTime(), editDate: currentDate, editTime: getCurrentTimeStr(), isCamera: false, bp_sys: '', bp_dia: '', pulse: '', sugar: '', weight: '', sleep_hours: '', existingFoodName: '', existingIngredients: [] });
       };
 
       const openBiometricsDraft = () => {
         setIsMenuOpen(false);
-        setDraft({ isOpen: true, isEditMode: false, type: 'biometrics', data: [], naturalText: '', memo: '', category: '생체기록', editDate: currentDate, editTime: getCurrentTimeStr(), isCamera: false, bp_sys: '', bp_dia: '', pulse: '', sugar: '', existingFoodName: '', existingIngredients: [] });
+        setDraft({ isOpen: true, isEditMode: false, type: 'biometrics', data: [], naturalText: '', memo: '', category: '생체기록', editDate: currentDate, editTime: getCurrentTimeStr(), isCamera: false, bp_sys: '', bp_dia: '', pulse: '', sugar: '', weight: '', sleep_hours: '', existingFoodName: '', existingIngredients: [] });
       };
 
       const handleEditClick = (log) => {
@@ -575,6 +575,7 @@
           type: parsedRaw.type || (log.imageUrl ? 'image' : 'text'), data: images,
           naturalText: fallbackText, memo: parsedRaw.memo || '', category: isCustom ? '직접입력' : log.category, isCamera: false,
           bp_sys: parsedRaw.biometrics?.bp_sys || '', bp_dia: parsedRaw.biometrics?.bp_dia || '', pulse: parsedRaw.biometrics?.pulse || '', sugar: parsedRaw.biometrics?.sugar || '',
+          weight: parsedRaw.biometrics?.weight || '', sleep_hours: parsedRaw.biometrics?.sleep_hours || '',
           existingFoodName: log.foodName, existingIngredients: log.ingredients
         });
         if (isCustom) setCustomCategory(log.category);
@@ -584,21 +585,21 @@
       // ★ 기록 저장/재분석 (구글 앱스스크립트 대신 Supabase Edge Function 호출)
       const handleUploadConfirm = () => {
         if (draft.type === 'text' && !draft.naturalText.trim()) return setSysError("내용을 입력해주세요!");
-        if (draft.type === 'biometrics' && !draft.bp_sys && !draft.bp_dia && !draft.pulse && !draft.sugar) return setSysError("최소 하나 이상의 수치를 입력해주세요!");
+        if (draft.type === 'biometrics' && !draft.bp_sys && !draft.bp_dia && !draft.pulse && !draft.sugar && !draft.weight && !draft.sleep_hours) return setSysError("최소 하나 이상의 수치를 입력해주세요!");
 
         const finalCategory = draft.type === 'biometrics' ? '생체기록' : (draft.category === '직접입력' ? (customCategory || '기타') : draft.category);
 
         const payload = {
           type: draft.type, base64Images: Array.isArray(draft.data) ? draft.data : [draft.data].filter(Boolean),
           naturalText: draft.naturalText, memo: draft.memo, date: draft.editDate, time: draft.editTime, category: finalCategory,
-          biometrics: draft.type === 'biometrics' ? { bp_sys: draft.bp_sys ? Number(draft.bp_sys) : null, bp_dia: draft.bp_dia ? Number(draft.bp_dia) : null, pulse: draft.pulse ? Number(draft.pulse) : null, sugar: draft.sugar ? Number(draft.sugar) : null } : null,
+          biometrics: draft.type === 'biometrics' ? { bp_sys: draft.bp_sys ? Number(draft.bp_sys) : null, bp_dia: draft.bp_dia ? Number(draft.bp_dia) : null, pulse: draft.pulse ? Number(draft.pulse) : null, sugar: draft.sugar ? Number(draft.sugar) : null, weight: draft.weight ? Number(draft.weight) : null, sleep_hours: draft.sleep_hours ? Number(draft.sleep_hours) : null } : null,
           disease: profile?.disease || '',
           aiMode: profile?.aiMode || 'normal',
           existingFoodName: draft.existingFoodName, existingIngredients: draft.existingIngredients
         };
         const isEdit = draft.isEditMode; const editId = draft.editLogId;
 
-        setDraft({ isOpen: false, isEditMode: false, type: '', data: [], naturalText: '', memo: '', category: '', bp_sys: '', bp_dia: '', pulse: '', sugar: '', existingFoodName: '', existingIngredients: [] });
+        setDraft({ isOpen: false, isEditMode: false, type: '', data: [], naturalText: '', memo: '', category: '', bp_sys: '', bp_dia: '', pulse: '', sugar: '', weight: '', sleep_hours: '', existingFoodName: '', existingIngredients: [] });
         setSysError("");
         nudgeViewportRepaint(); // ★ [버그수정] 메인화면 복귀 직후 터치 좌표 어긋남 방지
 
@@ -665,7 +666,7 @@
         let summaryData = "";
         if (statsMode === 'month') {
            const bioLogs = periodLogs.filter(l => l.category === '생체기록');
-           let sysSum = 0, diaSum = 0, sugarSum = 0, count = 0;
+           let sysSum = 0, diaSum = 0, sugarSum = 0, weightSum = 0, sleepSum = 0, count = 0, weightCount = 0, sleepCount = 0;
            bioLogs.forEach(l => {
               try {
                   const raw = JSON.parse(l.rawInput);
@@ -674,16 +675,20 @@
                       if (raw.biometrics.bp_dia) diaSum += raw.biometrics.bp_dia;
                       if (raw.biometrics.sugar) sugarSum += raw.biometrics.sugar;
                       if (raw.biometrics.bp_sys || raw.biometrics.sugar) count++;
+                      if (raw.biometrics.weight) { weightSum += raw.biometrics.weight; weightCount++; }
+                      if (raw.biometrics.sleep_hours) { sleepSum += raw.biometrics.sleep_hours; sleepCount++; }
                   }
               } catch(e){}
            });
            const avgSys = count ? Math.round(sysSum/count) : 0;
            const avgDia = count ? Math.round(diaSum/count) : 0;
            const avgSugar = count ? Math.round(sugarSum/count) : 0;
+           const avgWeight = weightCount ? (weightSum/weightCount).toFixed(1) : 0;
+           const avgSleep = sleepCount ? (sleepSum/sleepCount).toFixed(1) : 0;
            const foods = periodLogs.filter(l => l.category !== '생체기록' && l.category !== '운동').map(l => l.foodName).join(', ');
            const exercises = periodLogs.filter(l => l.category === '운동').map(l => l.foodName).join(', ');
 
-           summaryData = `[${activeRange.label} 패턴 압축 데이터]\n- 해당 기간 주요 식단: ${foods || '없음'}\n- 해당 기간 주요 운동: ${exercises || '없음'}\n- 평균 혈압: ${avgSys ? avgSys : '기록없음'} / ${avgDia ? avgDia : '기록없음'}\n- 평균 혈당: ${avgSugar ? avgSugar : '기록없음'}\n위 압축 데이터를 바탕으로 전반적인 생활 패턴의 장점과 개선점을 의학/영양학적으로 코칭해주세요.`;
+           summaryData = `[${activeRange.label} 패턴 압축 데이터]\n- 해당 기간 주요 식단: ${foods || '없음'}\n- 해당 기간 주요 운동: ${exercises || '없음'}\n- 평균 혈압: ${avgSys ? avgSys : '기록없음'} / ${avgDia ? avgDia : '기록없음'}\n- 평균 혈당: ${avgSugar ? avgSugar : '기록없음'}\n- 평균 체중: ${avgWeight ? avgWeight + 'kg' : '기록없음'}\n- 평균 수면 시간: ${avgSleep ? avgSleep + '시간' : '기록없음'}\n위 압축 데이터를 바탕으로 전반적인 생활 패턴의 장점과 개선점을 의학/영양학적으로 코칭해주세요.`;
         } else {
            let summaryLines = periodLogs.map(l => {
              if (l.category === '생체기록') return `[${l.date} ${l.time}] 생체: ${Array.isArray(l.ingredients) ? l.ingredients.join(', ') : l.ingredients}`;
@@ -1468,6 +1473,16 @@
                       <div className="flex-1">
                         <label className="text-sm font-bold text-gray-600 mb-1 block">공복 혈당 (mg/dL)</label>
                         <input type="number" placeholder="예: 95" value={draft.sugar} onChange={e => setDraft({...draft, sugar: e.target.value})} onBlur={handleInputBlur} className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3 outline-none focus:border-green-500 text-base" />
+                      </div>
+                    </div>
+                    <div className="flex gap-3">
+                      <div className="flex-1">
+                        <label className="text-sm font-bold text-gray-600 mb-1 block">체중 (kg)</label>
+                        <input type="number" step="0.1" placeholder="예: 68.5" value={draft.weight} onChange={e => setDraft({...draft, weight: e.target.value})} onBlur={handleInputBlur} className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3 outline-none focus:border-purple-500 text-base" />
+                      </div>
+                      <div className="flex-1">
+                        <label className="text-sm font-bold text-gray-600 mb-1 block">수면 시간 (시간)</label>
+                        <input type="number" step="0.5" placeholder="예: 7" value={draft.sleep_hours} onChange={e => setDraft({...draft, sleep_hours: e.target.value})} onBlur={handleInputBlur} className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3 outline-none focus:border-indigo-500 text-base" />
                       </div>
                     </div>
                   </div>
