@@ -248,6 +248,10 @@
         bp_sys: '', bp_dia: '', pulse: '', sugar: '', existingFoodName: '', existingIngredients: []
       });
 
+      // ★ 자주 먹는 음식 (최근 30일 기록 기준 빈도순, 입력창 위 칩으로 표시)
+      const [frequentFoods, setFrequentFoods] = useState([]);
+      const naturalTextRef = useRef(null);
+
       const wakeLockRef = useRef(null);
 
       useEffect(() => {
@@ -292,6 +296,44 @@
           }
         });
       }, [session]);
+
+      // ★ 자주 먹는 음식 계산 (최근 30일, 운동/생체기록 제외, 빈도순 상위 20개)
+      const fetchFrequentFoods = async () => {
+        const since = new Date(); since.setDate(since.getDate() - 30);
+        const { data, error } = await sb.from('logs').select('food_name, category').gte('log_date', formatDate(since));
+        if (error || !data) return;
+        const counts = {};
+        data.forEach(row => {
+          if (row.category === '운동' || row.category === '생체기록') return;
+          const name = (row.food_name || '').trim();
+          if (!name) return;
+          counts[name] = (counts[name] || 0) + 1;
+        });
+        const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 20).map(([name]) => name);
+        setFrequentFoods(sorted);
+      };
+
+      useEffect(() => {
+        if (!session) { setFrequentFoods([]); return; }
+        fetchFrequentFoods();
+      }, [session]);
+
+      // ★ 자주 먹는 음식 칩을 탭하면 입력창 끝에 이름만 삽입 (수량은 직접 이어서 입력)
+      const insertFrequentFood = (name) => {
+        setDraft(prev => {
+          const trimmed = (prev.naturalText || '').trimEnd();
+          const needsComma = trimmed.length > 0;
+          const next = needsComma ? `${trimmed}, ${name} ` : `${name} `;
+          return { ...prev, naturalText: next };
+        });
+        setTimeout(() => {
+          if (naturalTextRef.current) {
+            naturalTextRef.current.focus();
+            const len = naturalTextRef.current.value.length;
+            naturalTextRef.current.setSelectionRange(len, len);
+          }
+        }, 0);
+      };
 
       useEffect(() => {
         if (!session) return;
@@ -569,12 +611,14 @@
               if (newData.date !== currentDate && activeTab === 'home') setLogs(prev => prev.filter(item => item.id !== editId));
               else setLogs(prev => prev.map(item => item.id === editId ? { ...item, ...newData } : item));
               setReanalyzingId(null);
+              if (finalCategory !== '운동' && finalCategory !== '생체기록') fetchFrequentFoods();
             } else {
               setIsAnalyzing(true);
               const newLog = await callAI('analyze', payload);
               clearTimeout(timeoutId);
               if (newLog.date === currentDate && activeTab === 'home') setLogs(prev => [newLog, ...prev]);
               setIsAnalyzing(false);
+              if (finalCategory !== '운동' && finalCategory !== '생체기록') fetchFrequentFoods();
             }
           } catch (err) {
             clearTimeout(timeoutId);
@@ -1437,7 +1481,21 @@
 
                 {draft.type === 'text' && (
                   <div className="mb-5">
+                    {draft.category !== '운동' && frequentFoods.length > 0 && (
+                      <div className="mb-2.5">
+                        <label className="text-xs font-bold text-gray-400 mb-1.5 block">🍽️ 자주 먹는 음식 (탭해서 추가, 양은 직접 입력)</label>
+                        <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
+                          {frequentFoods.map(name => (
+                            <button type="button" key={name} onClick={() => insertFrequentFood(name)}
+                              className="shrink-0 px-3 py-1.5 rounded-full text-xs font-bold bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 active:scale-95 transition">
+                              {name}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                     <textarea
+                      ref={naturalTextRef}
                       placeholder={draft.category === '운동' ? "예: 런닝머신 30분 뛰었어" : "예: 아침으로 사과 반 개 먹었어"}
                       value={draft.naturalText} onChange={e => setDraft({...draft, naturalText: e.target.value})} onBlur={handleInputBlur}
                       onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleUploadConfirm(); } }}
