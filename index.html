@@ -211,6 +211,7 @@
 
       const [logs, setLogs] = useState([]);
       const [periodLogs, setPeriodLogs] = useState([]);
+      const [periodGrades, setPeriodGrades] = useState([]); // ★ 일별 평가등급 추이 그래프용 (daily_reports)
 
       const [isFetching, setIsFetching] = useState(true);
       const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -371,6 +372,8 @@
         setIsFetching(false);
         const { data: pr } = await sb.from('period_reports').select('*').eq('period_start', startStr).eq('is_month', statsMode === 'month').maybeSingle();
         if (pr) setAiReport(pr.report_text);
+        const { data: grades } = await sb.from('daily_reports').select('report_date, grade').gte('report_date', startStr).lte('report_date', endStr).order('report_date', { ascending: true });
+        setPeriodGrades(grades || []);
       };
 
       const changeDate = (direction) => {
@@ -788,7 +791,7 @@
             try {
               if (l.category === '생체기록') {
                 const raw = JSON.parse(l.rawInput);
-                if (raw.biometrics?.bp_sys || raw.biometrics?.bp_dia || raw.biometrics?.sugar) bioDates.add(l.date);
+                if (raw.biometrics?.bp_sys || raw.biometrics?.bp_dia || raw.biometrics?.sugar || raw.biometrics?.weight || raw.biometrics?.sleep_hours) bioDates.add(l.date);
               }
             } catch(e) {}
           });
@@ -797,6 +800,46 @@
       };
 
       const chartDays = getChartDays();
+
+      // ★ 체중/수면 시간 트렌드 그래프용 일별 평균 시리즈 계산
+      const getBioSeries = (field) => chartDays.map(dateStr => {
+        const dayLogs = periodLogs.filter(l => l.date === dateStr && l.category === '생체기록');
+        let sum = 0, count = 0;
+        dayLogs.forEach(l => {
+          try { const raw = JSON.parse(l.rawInput); if (raw.biometrics?.[field]) { sum += raw.biometrics[field]; count++; } } catch(e) {}
+        });
+        return { dateStr, avg: count ? sum / count : null };
+      });
+      const weightSeries = getBioSeries('weight');
+      const sleepSeries = getBioSeries('sleep_hours');
+      const weightValues = weightSeries.map(w => w.avg).filter(v => v !== null);
+      const weightMin = weightValues.length ? Math.min(...weightValues) : 0;
+      const weightMax = weightValues.length ? Math.max(...weightValues) : 0;
+      const weightPad = weightMax === weightMin ? 1 : (weightMax - weightMin) * 0.2;
+      const weightLo = weightMin - weightPad;
+      const weightHi = weightMax + weightPad;
+
+      // ★ 음주/야식 캘린더(월간)용 날짜 셀 계산 (앞쪽 빈 칸 포함, 요일 정렬)
+      const getMonthCalendarCells = () => {
+        if (!activeRange.start || !activeRange.end) return [];
+        const startD = parseDate(activeRange.start);
+        const endD = parseDate(activeRange.end);
+        const firstWeekday = startD.getDay();
+        const totalDays = endD.getDate();
+        const cells = [];
+        for (let i = 0; i < firstWeekday; i++) cells.push(null);
+        for (let day = 1; day <= totalDays; day++) {
+          cells.push(formatDate(new Date(startD.getFullYear(), startD.getMonth(), day)));
+        }
+        return cells;
+      };
+      const monthCalendarCells = statsMode === 'month' ? getMonthCalendarCells() : [];
+
+      // ★ 일별 평가등급 추이 그래프용 날짜 목록 (주간: 7일 전체, 월간: 등급 기록이 있는 날만)
+      const gradeChartDays = statsMode === 'week'
+        ? getDaysArray().map((_, i) => { const d = parseDate(activeRange.start); d.setDate(d.getDate() + i); return formatDate(d); })
+        : periodGrades.map(g => g.report_date);
+      const gradeRank = { A: 5, B: 4, C: 3, D: 2, F: 1 };
 
       // ★ 로그인 / 회원가입 화면 (기존 최초 온보딩 폼 대체)
       const AuthForm = () => (
@@ -1172,21 +1215,80 @@
                         })}
                       </div>
                     </div>
-                  </div>
-                ) : (
-                  <div className="flex gap-4">
-                    <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100 flex-1 flex flex-col items-center justify-center">
-                      <h3 className="font-bold text-gray-800 mb-1 text-sm">🏃‍♂️ 이번 달 운동</h3>
-                      <div className="text-3xl font-black text-green-500 flex items-baseline mt-2">
-                        {new Set(periodLogs.filter(l => l.category === '운동').map(l => l.date)).size}
-                        <span className="text-sm font-bold text-gray-400 ml-1">일</span>
+
+                    <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
+                      <h3 className="font-bold text-gray-800 mb-5 flex justify-between items-center">
+                        <span>🌙 이번 주 야식 스탬프</span>
+                        <span className="text-xs font-bold text-purple-700 bg-purple-100 px-2.5 py-1 rounded-lg shadow-sm">
+                          {getDaysArray().filter((_, i) => {
+                             const d = parseDate(activeRange.start); d.setDate(d.getDate() + i);
+                             return periodLogs.some(l => l.date === formatDate(d) && l.category === '야식');
+                          }).length}일 야식
+                        </span>
+                      </h3>
+                      <div className="flex justify-between items-center px-1">
+                        {getDaysArray().map((_, i) => {
+                          const d = parseDate(activeRange.start); d.setDate(d.getDate() + i);
+                          const dateStr = formatDate(d);
+                          const hasNight = periodLogs.some(l => l.date === dateStr && l.category === '야식');
+                          return (
+                            <div key={`night-${dateStr}`} className="flex flex-col items-center gap-2">
+                              <div className={`w-10 h-10 md:w-11 md:h-11 rounded-full flex items-center justify-center text-lg md:text-xl transition-all duration-300 ${hasNight ? 'bg-purple-100 text-purple-600 shadow-sm transform scale-110' : 'bg-gray-50 border-2 border-dashed border-gray-200 text-transparent'}`}>
+                                {hasNight ? '🌙' : ''}
+                              </div>
+                              <span className={`text-[10px] md:text-xs font-bold ${hasNight ? 'text-purple-600' : 'text-gray-400'}`}>{['일','월','화','수','목','금','토'][d.getDay()]}</span>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
-                    <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100 flex-1 flex flex-col items-center justify-center">
-                      <h3 className="font-bold text-gray-800 mb-1 text-sm">🍺 이번 달 음주</h3>
-                      <div className="text-3xl font-black text-orange-500 flex items-baseline mt-2">
-                        {new Set(periodLogs.filter(l => l.isAlcohol).map(l => l.date)).size}
-                        <span className="text-sm font-bold text-gray-400 ml-1">일</span>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="flex gap-4">
+                      <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100 flex-1 flex flex-col items-center justify-center">
+                        <h3 className="font-bold text-gray-800 mb-1 text-sm">🏃‍♂️ 이번 달 운동</h3>
+                        <div className="text-3xl font-black text-green-500 flex items-baseline mt-2">
+                          {new Set(periodLogs.filter(l => l.category === '운동').map(l => l.date)).size}
+                          <span className="text-sm font-bold text-gray-400 ml-1">일</span>
+                        </div>
+                      </div>
+                      <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100 flex-1 flex flex-col items-center justify-center">
+                        <h3 className="font-bold text-gray-800 mb-1 text-sm">🍺 이번 달 음주</h3>
+                        <div className="text-3xl font-black text-orange-500 flex items-baseline mt-2">
+                          {new Set(periodLogs.filter(l => l.isAlcohol).map(l => l.date)).size}
+                          <span className="text-sm font-bold text-gray-400 ml-1">일</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
+                      <h3 className="font-bold text-gray-800 mb-4">📅 음주 · 야식 캘린더</h3>
+                      <div className="grid grid-cols-7 gap-1.5 text-center mb-2">
+                        {['일','월','화','수','목','금','토'].map(w => (
+                          <span key={`wd-${w}`} className="text-[10px] font-bold text-gray-400">{w}</span>
+                        ))}
+                      </div>
+                      <div className="grid grid-cols-7 gap-1.5">
+                        {monthCalendarCells.map((dateStr, i) => {
+                          if (!dateStr) return <div key={`blank-${i}`} />;
+                          const hasAlc = periodLogs.some(l => l.date === dateStr && l.isAlcohol);
+                          const hasNight = periodLogs.some(l => l.date === dateStr && l.category === '야식');
+                          const d = parseDate(dateStr);
+                          return (
+                            <div key={dateStr} className={`aspect-square rounded-lg flex flex-col items-center justify-center text-[10px] ${hasAlc || hasNight ? 'bg-gray-50' : ''}`}>
+                              <span className="text-gray-400 font-medium">{d.getDate()}</span>
+                              <span className="flex gap-0.5 mt-0.5 leading-none">
+                                {hasAlc && <span title="음주">🍺</span>}
+                                {hasNight && <span title="야식">🌙</span>}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div className="flex justify-center gap-4 mt-3 text-xs font-medium text-gray-500">
+                        <span className="flex items-center gap-1">🍺 음주</span>
+                        <span className="flex items-center gap-1">🌙 야식</span>
                       </div>
                     </div>
                   </div>
@@ -1305,6 +1407,149 @@
                                     </div>
                                     <div className="absolute w-2 h-2 rounded-full bg-pink-500 shadow-sm" style={{top: `calc(${topPos}% - 4px)`}}></div>
                                     <div className="absolute w-[2px] bg-pink-100" style={{top: `${topPos}%`, height: `calc(100% - ${topPos}%)`}}></div>
+                                  </div>
+                                )}
+                                <span className="text-[10px] text-gray-500 mt-2 absolute -bottom-6 whitespace-nowrap font-medium">
+                                  {statsMode === 'month' ? `${d.getMonth()+1}/${d.getDate()}` : ['일','월','화','수','목','금','토'][d.getDay()]}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
+                  <h3 className="font-bold text-gray-800 mb-6 flex justify-between items-center">
+                    <span>⚖️ 체중 트렌드</span>
+                  </h3>
+                  {weightValues.length === 0 ? (
+                    <div className="flex items-center justify-center h-48 text-gray-400 text-sm border-b-2 border-gray-100 pb-2 bg-gray-50/50 rounded-xl">데이터가 없습니다.</div>
+                  ) : (
+                    <div className="relative w-full pt-2">
+                      <div className="absolute top-2 left-0 right-0 h-48 pointer-events-none z-0">
+                        <div className="absolute left-0 z-20" style={{top: '0%'}}>
+                          <span className="text-[10px] text-purple-600 bg-white/90 px-1 rounded shadow-sm font-bold backdrop-blur-sm">{weightHi.toFixed(1)}kg</span>
+                        </div>
+                        <div className="absolute left-0 z-20 -translate-y-full" style={{top: '100%'}}>
+                          <span className="text-[10px] text-purple-600 bg-white/90 px-1 rounded shadow-sm font-bold backdrop-blur-sm">{weightLo.toFixed(1)}kg</span>
+                        </div>
+                        <div className="absolute bottom-0 left-0 right-0 border-b-2 border-gray-100"></div>
+                      </div>
+
+                      <div className="overflow-x-auto no-scrollbar pb-8 relative z-10">
+                        <div className="flex items-end h-48 px-6 min-w-max relative">
+                          {weightSeries.map(w => {
+                            const topPos = w.avg !== null ? Math.max(0, Math.min(100, ((weightHi - w.avg) / (weightHi - weightLo)) * 100)) : null;
+                            const d = parseDate(w.dateStr);
+                            const gapClass = statsMode === 'month' ? 'mx-3' : 'flex-1 mx-1';
+                            return (
+                              <div key={`weight-${w.dateStr}`} className={`flex flex-col items-center group relative h-full z-10 w-8 ${gapClass}`}>
+                                {w.avg !== null && (
+                                  <div className="w-full flex justify-center items-start h-full relative">
+                                    <div className="opacity-0 group-hover:opacity-100 absolute bg-gray-800 text-white text-[11px] px-2 py-1 rounded whitespace-nowrap z-50 transition-opacity pointer-events-none shadow-md font-bold"
+                                         style={{ top: `calc(${topPos}% - 24px)`, left: '50%', transform: 'translateX(-50%)' }}>
+                                      {w.avg.toFixed(1)}kg
+                                    </div>
+                                    <div className="absolute w-2 h-2 rounded-full bg-purple-500 shadow-sm" style={{top: `calc(${topPos}% - 4px)`}}></div>
+                                    <div className="absolute w-[2px] bg-purple-100" style={{top: `${topPos}%`, height: `calc(100% - ${topPos}%)`}}></div>
+                                  </div>
+                                )}
+                                <span className="text-[10px] text-gray-500 mt-2 absolute -bottom-6 whitespace-nowrap font-medium">
+                                  {statsMode === 'month' ? `${d.getMonth()+1}/${d.getDate()}` : ['일','월','화','수','목','금','토'][d.getDay()]}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
+                  <h3 className="font-bold text-gray-800 mb-6 flex justify-between items-center">
+                    <span>😴 수면 시간 트렌드</span>
+                  </h3>
+                  {sleepSeries.every(s => s.avg === null) ? (
+                    <div className="flex items-center justify-center h-40 text-gray-400 text-sm border-b-2 border-gray-100 pb-2 bg-gray-50/50 rounded-xl">데이터가 없습니다.</div>
+                  ) : (
+                    <div className="relative w-full pt-2">
+                      <div className="absolute top-2 left-0 right-0 h-40 pointer-events-none z-0">
+                        <div className="absolute left-0 right-0 border-t border-dashed border-indigo-300" style={{top: '41.7%'}}></div>
+                        <div className="absolute left-0 z-20 -translate-y-1/2" style={{top: '41.7%'}}>
+                          <span className="text-[10px] text-indigo-600 bg-white/90 px-1 rounded shadow-sm font-bold backdrop-blur-sm">권장 7시간</span>
+                        </div>
+                        <div className="absolute bottom-0 left-0 right-0 border-b-2 border-gray-100"></div>
+                      </div>
+
+                      <div className="overflow-x-auto no-scrollbar pb-8 relative z-10">
+                        <div className="flex items-end h-40 px-6 min-w-max relative">
+                          {sleepSeries.map(s => {
+                            const heightPct = s.avg !== null ? Math.max(0, Math.min(100, (s.avg / 12) * 100)) : 0;
+                            const d = parseDate(s.dateStr);
+                            const gapClass = statsMode === 'month' ? 'mx-3' : 'flex-1 mx-1';
+                            return (
+                              <div key={`sleep-${s.dateStr}`} className={`flex flex-col items-center group relative h-full z-10 w-8 ${gapClass}`}>
+                                <div className="w-full flex justify-center items-end h-full relative">
+                                  {s.avg !== null && (
+                                    <>
+                                      <div className="opacity-0 group-hover:opacity-100 absolute bg-gray-800 text-white text-[11px] px-2 py-1 rounded whitespace-nowrap z-50 transition-opacity pointer-events-none shadow-md font-bold"
+                                           style={{ bottom: `calc(${heightPct}% + 6px)`, left: '50%', transform: 'translateX(-50%)' }}>
+                                        {s.avg.toFixed(1)}시간
+                                      </div>
+                                      <div className="w-4 bg-indigo-400 rounded-t-md" style={{height: `${heightPct}%`}}></div>
+                                    </>
+                                  )}
+                                </div>
+                                <span className="text-[10px] text-gray-500 mt-2 absolute -bottom-6 whitespace-nowrap font-medium">
+                                  {statsMode === 'month' ? `${d.getMonth()+1}/${d.getDate()}` : ['일','월','화','수','목','금','토'][d.getDay()]}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
+                  <h3 className="font-bold text-gray-800 mb-6 flex justify-between items-center">
+                    <span>📋 일별 평가등급 추이</span>
+                  </h3>
+                  {gradeChartDays.length === 0 ? (
+                    <div className="flex items-center justify-center h-40 text-gray-400 text-sm border-b-2 border-gray-100 pb-2 bg-gray-50/50 rounded-xl">데이터가 없습니다.</div>
+                  ) : (
+                    <div className="relative w-full pt-2">
+                      <div className="absolute top-2 left-0 right-0 h-40 pointer-events-none z-0">
+                        {['A','B','C','D','F'].map(g => (
+                          <div key={`grade-line-${g}`} className="absolute left-0 z-20 -translate-y-1/2" style={{top: `${100 - ((gradeRank[g] - 1) / 4) * 100}%`}}>
+                            <span className="text-[10px] text-gray-400 bg-white/90 px-1 rounded font-bold">{g}</span>
+                          </div>
+                        ))}
+                        <div className="absolute bottom-0 left-0 right-0 border-b-2 border-gray-100"></div>
+                      </div>
+
+                      <div className="overflow-x-auto no-scrollbar pb-8 relative z-10">
+                        <div className="flex items-end h-40 px-6 min-w-max relative">
+                          {gradeChartDays.map(dateStr => {
+                            const g = periodGrades.find(pg => pg.report_date === dateStr);
+                            const rank = g ? gradeRank[g.grade] : null;
+                            const topPos = rank ? 100 - ((rank - 1) / 4) * 100 : null;
+                            const d = parseDate(dateStr);
+                            const gapClass = statsMode === 'month' ? 'mx-3' : 'flex-1 mx-1';
+                            return (
+                              <div key={`grade-${dateStr}`} className={`flex flex-col items-center group relative h-full z-10 w-8 ${gapClass}`}>
+                                {rank && (
+                                  <div className="w-full flex justify-center items-start h-full relative">
+                                    <div className="opacity-0 group-hover:opacity-100 absolute bg-gray-800 text-white text-[11px] px-2 py-1 rounded whitespace-nowrap z-50 transition-opacity pointer-events-none shadow-md font-bold"
+                                         style={{ top: `calc(${topPos}% - 24px)`, left: '50%', transform: 'translateX(-50%)' }}>
+                                      {g.grade}등급
+                                    </div>
+                                    <div className={`absolute w-2.5 h-2.5 rounded-full shadow-sm ${getGradeColor(g.grade)}`} style={{top: `calc(${topPos}% - 5px)`}}></div>
                                   </div>
                                 )}
                                 <span className="text-[10px] text-gray-500 mt-2 absolute -bottom-6 whitespace-nowrap font-medium">
