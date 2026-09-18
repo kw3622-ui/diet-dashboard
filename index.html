@@ -1489,7 +1489,7 @@
                     {draft.category !== '운동' && frequentFoods.length > 0 && (
                       <div className="mb-2.5">
                         <label className="text-xs font-bold text-gray-400 mb-1.5 block">🍽️ 자주 먹는 음식 (탭해서 추가, 양은 직접 입력)</label>
-                        <div className="flex flex-wrap gap-1.5">
+                        <div className="flex flex-wrap justify-center gap-1.5">
                           {frequentFoods.map(name => (
                             <button type="button" key={name} onClick={() => insertFrequentFood(name)}
                               className="shrink-0 whitespace-nowrap px-2.5 py-1 rounded-full text-xs font-bold bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 active:scale-95 transition">
