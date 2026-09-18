@@ -314,7 +314,7 @@
             counts[name] = (counts[name] || 0) + 1;
           });
         });
-        const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 20).map(([name]) => name);
+        const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 15).map(([name]) => name);
         setFrequentFoods(sorted);
       };
 
@@ -1489,10 +1489,10 @@
                     {draft.category !== '운동' && frequentFoods.length > 0 && (
                       <div className="mb-2.5">
                         <label className="text-xs font-bold text-gray-400 mb-1.5 block">🍽️ 자주 먹는 음식 (탭해서 추가, 양은 직접 입력)</label>
-                        <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
+                        <div className="flex flex-wrap gap-1.5">
                           {frequentFoods.map(name => (
                             <button type="button" key={name} onClick={() => insertFrequentFood(name)}
-                              className="shrink-0 px-3 py-1.5 rounded-full text-xs font-bold bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 active:scale-95 transition">
+                              className="shrink-0 whitespace-nowrap px-2.5 py-1 rounded-full text-xs font-bold bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 active:scale-95 transition">
                               {name}
                             </button>
                           ))}
@@ -1504,7 +1504,7 @@
                       placeholder={draft.category === '운동' ? "예: 런닝머신 30분 뛰었어" : "예: 아침으로 사과 반 개 먹었어"}
                       value={draft.naturalText} onChange={e => setDraft({...draft, naturalText: e.target.value})} onBlur={handleInputBlur}
                       onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleUploadConfirm(); } }}
-                      className="w-full bg-gray-50 border border-gray-200 p-4 rounded-2xl outline-none focus:border-blue-500 h-32 resize-none text-base leading-relaxed"
+                      className="w-full bg-gray-50 border border-gray-200 p-4 rounded-2xl outline-none focus:border-blue-500 h-24 resize-none text-base leading-relaxed"
                     />
                   </div>
                 )}
