@@ -56,6 +56,8 @@
       imageUrl: (row.image_urls || []).join(','),
       rawInput: JSON.stringify(row.raw_input || {}),
       isAlcohol: !!row.is_alcohol,
+      followupQuestion: row.followup_question || null,
+      followupAnswer: row.followup_answer || null,
     });
 
     // 페이지를 처음 열 때, 기기 시계가 서버 시각보다 살짝 느린 경우 방금 발급된 로그인 토큰이
@@ -72,13 +74,14 @@
     };
 
     // Gemini 호출은 API 키를 숨기기 위해 Supabase Edge Function(diet-ai)을 통해서만 수행
-    const callAI = async (action, payload) => {
+    const callAI = async (action, payload, signal) => {
       const { data: { session } } = await sb.auth.getSession();
       if (!session) throw new Error('로그인이 필요합니다.');
       const res = await fetch(FUNCTIONS_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
         body: JSON.stringify({ action, payload }),
+        signal,
       });
       const data = await res.json();
       if (!res.ok) throw new Error((data && data.error) || 'AI 요청에 실패했습니다.');
@@ -122,6 +125,15 @@
     };
 
     const formatDate = (d) => { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+
+    // ★ 백업/내보내기용 CSV 필드 이스케이프 (콤마·따옴표·줄바꿈 포함 시 큰따옴표로 감싸고 내부 따옴표는 두 번씩)
+    const escapeCsvField = (val) => {
+      const str = val === null || val === undefined ? '' : String(val);
+      if (/[",\n\r]/.test(str)) {
+        return '"' + str.replace(/"/g, '""') + '"';
+      }
+      return str;
+    };
 
     const parseDate = (dateStr) => {
       if (!dateStr) return new Date();
@@ -223,6 +235,16 @@
       const [isMenuOpen, setIsMenuOpen] = useState(false);
       const [customCategory, setCustomCategory] = useState("");
       const [isCompressing, setIsCompressing] = useState(false);
+      const [lightboxImage, setLightboxImage] = useState(null); // ★ 타임라인 사진을 탭해서 원본 크기로 볼 때 사용
+
+      // ★ 사진/한줄기록 분석에 대한 후속 질문 (기록당 1회) — 어느 기록의 입력창이 열려있는지, 입력값, 제출 중 여부
+      const [openFollowupId, setOpenFollowupId] = useState(null);
+      const [followupDraft, setFollowupDraft] = useState('');
+      const [submittingFollowupId, setSubmittingFollowupId] = useState(null);
+
+      // ★ AI 호출 취소/지연 안내용 — 진행 중인 fetch를 중단할 수 있는 컨트롤러와, 로딩이 시작된 이후 경과 초
+      const abortControllerRef = useRef(null);
+      const [loadingElapsed, setLoadingElapsed] = useState(0);
 
       const [statsMode, setStatsMode] = useState('week');
       const [aiReport, setAiReport] = useState("");
@@ -236,6 +258,7 @@
       const [authLoading, setAuthLoading] = useState(false);
       const [accountError, setAccountError] = useState('');
       const [accountSaving, setAccountSaving] = useState(false);
+      const [isExporting, setIsExporting] = useState(false);
 
       const [isAdminOpen, setIsAdminOpen] = useState(false);
       const [memberList, setMemberList] = useState([]);
@@ -251,6 +274,11 @@
 
       // ★ 자주 먹는 음식 (최근 30일 기록 기준 빈도순, 입력창 위 칩으로 표시)
       const [frequentFoods, setFrequentFoods] = useState([]);
+
+      // ★ 목표 달성 현황용 (연속 금주일수 계산 + 가장 최근 생체 수치)
+      const [lastAlcoholDate, setLastAlcoholDate] = useState(undefined); // undefined=미로딩, null=음주기록 없음
+      const [firstLogDate, setFirstLogDate] = useState(null);
+      const [latestBiometrics, setLatestBiometrics] = useState(null);
       const naturalTextRef = useRef(null);
 
       const wakeLockRef = useRef(null);
@@ -277,6 +305,15 @@
         else releaseWakeLock();
       }, [isAnalyzing, reanalyzingId, isGeneratingReport, isGeneratingDaily, isCompressing]);
 
+      // ★ AI 응답 대기 시간 카운트 — 30초 넘게 걸리면 로딩 화면에 "계속 기다리기/취소" 안내를 띄우기 위함
+      useEffect(() => {
+        const isAiLoading = isAnalyzing || !!reanalyzingId || isGeneratingReport || isGeneratingDaily;
+        if (!isAiLoading) { setLoadingElapsed(0); return; }
+        setLoadingElapsed(0);
+        const timer = setInterval(() => setLoadingElapsed(prev => prev + 1), 1000);
+        return () => clearInterval(timer);
+      }, [isAnalyzing, reanalyzingId, isGeneratingReport, isGeneratingDaily]);
+
       // ★ 로그인 세션 확인 + 유지 (한 번 로그인하면 계속 로그인 상태 유지)
       useEffect(() => {
         sb.auth.getSession().then(({ data }) => setSession(data.session));
@@ -292,7 +329,10 @@
             setProfile({
               username: data.username, height: data.height, weight: data.weight, age: data.age,
               gender: data.gender, disease: data.disease || '', aiMode: data.ai_mode || 'normal',
-              isApproved: !!data.is_approved, isAdmin: !!data.is_admin
+              isApproved: !!data.is_approved, isAdmin: !!data.is_admin,
+              goalExerciseWeekly: data.goal_exercise_weekly, goalAlcoholFreeDays: data.goal_alcohol_free_days,
+              goalWeightKg: data.goal_weight_kg, goalBpSysMax: data.goal_bp_sys_max, goalBpDiaMax: data.goal_bp_dia_max,
+              goalSugarMax: data.goal_sugar_max
             });
           }
         });
@@ -322,6 +362,28 @@
       useEffect(() => {
         if (!session) { setFrequentFoods([]); return; }
         fetchFrequentFoods();
+      }, [session]);
+
+      // ★ 목표 달성 현황 계산용 데이터 (마지막 음주일, 첫 기록일, 가장 최근 생체 수치)
+      const fetchGoalStats = async () => {
+        const [alcRes, firstRes, bioRes] = await Promise.all([
+          sb.from('logs').select('log_date').eq('is_alcohol', true).order('log_date', { ascending: false }).limit(1),
+          sb.from('logs').select('log_date').order('log_date', { ascending: true }).limit(1),
+          sb.from('logs').select('log_date, raw_input').eq('category', '생체기록').order('log_date', { ascending: false }).order('log_time', { ascending: false }).limit(1),
+        ]);
+        setLastAlcoholDate(alcRes.data && alcRes.data.length ? alcRes.data[0].log_date : null);
+        setFirstLogDate(firstRes.data && firstRes.data.length ? firstRes.data[0].log_date : null);
+        if (bioRes.data && bioRes.data.length) {
+          const raw = bioRes.data[0].raw_input || {};
+          setLatestBiometrics({ date: bioRes.data[0].log_date, ...(raw.biometrics || {}) });
+        } else {
+          setLatestBiometrics(null);
+        }
+      };
+
+      useEffect(() => {
+        if (!session) { setLastAlcoholDate(undefined); setFirstLogDate(null); setLatestBiometrics(null); return; }
+        fetchGoalStats();
       }, [session]);
 
       // ★ 자주 먹는 음식 칩을 탭하면 입력창 끝에 이름만 삽입 (수량은 직접 이어서 입력)
@@ -357,7 +419,7 @@
         const { data, error } = await withAuthRetry(() =>
           sb.from('logs').select('*').eq('log_date', date).order('log_time', { ascending: false })
         );
-        if (error) setSysError(error.message); else setLogs((data || []).map(mapLogRow));
+        if (error) reportFatalError(error); else setLogs((data || []).map(mapLogRow));
         setIsFetching(false);
         const { data: dr } = await sb.from('daily_reports').select('*').eq('report_date', date).maybeSingle();
         if (dr) setDailyReport({ grade: dr.grade, comment: dr.comment });
@@ -368,7 +430,7 @@
         const { data, error } = await withAuthRetry(() =>
           sb.from('logs').select('*').gte('log_date', startStr).lte('log_date', endStr).order('log_date', { ascending: false }).order('log_time', { ascending: false })
         );
-        if (error) setSysError(error.message); else setPeriodLogs((data || []).map(mapLogRow));
+        if (error) reportFatalError(error); else setPeriodLogs((data || []).map(mapLogRow));
         setIsFetching(false);
         const { data: pr } = await sb.from('period_reports').select('*').eq('period_start', startStr).eq('is_month', statsMode === 'month').maybeSingle();
         if (pr) setAiReport(pr.report_text);
@@ -407,6 +469,26 @@
         setTimeout(() => setSysNotice(""), 2500);
       };
 
+      // ★ 서버/네트워크에서 실제로 발생한 에러 처리 전용 — 새로고침하면 대부분 해결되는 경험적 사실에 따라
+      // 안내 문구를 띄운 뒤 자동으로 새로고침한다. (단순 입력 안내는 새로고침이 필요 없으니 그대로 setSysError를 쓴다)
+      // 새로고침으로도 안 고쳐지는 문제라면 계속 새로고침을 반복하지 않도록, 최근 30초 안에 이미
+      // 자동 새로고침을 했다면 이번엔 건너뛰고 메시지만 보여준다.
+      const AUTO_REFRESH_KEY = 'dietapp_last_auto_refresh';
+      const AUTO_REFRESH_COOLDOWN_MS = 30000;
+      const reportFatalError = (errOrMsg) => {
+        console.error(errOrMsg);
+        let lastRefresh = 0;
+        try { lastRefresh = Number(sessionStorage.getItem(AUTO_REFRESH_KEY)) || 0; } catch (e) {}
+        const now = Date.now();
+        if (now - lastRefresh > AUTO_REFRESH_COOLDOWN_MS) {
+          setSysError('일시적인 문제가 발생했어요. 잠시 후 새로고침할게요...');
+          try { sessionStorage.setItem(AUTO_REFRESH_KEY, String(now)); } catch (e) {}
+          setTimeout(() => { window.location.reload(); }, 2000);
+        } else {
+          setSysError('문제가 계속되고 있어요. 화면을 새로고침해주세요.');
+        }
+      };
+
       // ★ 계정 정보 저장 (프로필 + 계정명 + 비밀번호, 기존 SettingsForm 대체)
       const saveProfile = async (e) => {
         e.preventDefault();
@@ -422,6 +504,12 @@
             gender: fd.get('gender'),
             disease: fd.get('disease') || '',
             ai_mode: fd.get('aiMode') || 'normal',
+            goal_exercise_weekly: fd.get('goalExerciseWeekly') ? Number(fd.get('goalExerciseWeekly')) : null,
+            goal_alcohol_free_days: fd.get('goalAlcoholFreeDays') ? Number(fd.get('goalAlcoholFreeDays')) : null,
+            goal_weight_kg: fd.get('goalWeightKg') ? Number(fd.get('goalWeightKg')) : null,
+            goal_bp_sys_max: fd.get('goalBpSysMax') ? Number(fd.get('goalBpSysMax')) : null,
+            goal_bp_dia_max: fd.get('goalBpDiaMax') ? Number(fd.get('goalBpDiaMax')) : null,
+            goal_sugar_max: fd.get('goalSugarMax') ? Number(fd.get('goalSugarMax')) : null,
           }).eq('id', session.user.id);
           if (pErr) throw pErr;
 
@@ -445,7 +533,10 @@
             setProfile({
               username: freshProfile.username, height: freshProfile.height, weight: freshProfile.weight, age: freshProfile.age,
               gender: freshProfile.gender, disease: freshProfile.disease || '', aiMode: freshProfile.ai_mode || 'normal',
-              isApproved: !!freshProfile.is_approved, isAdmin: !!freshProfile.is_admin
+              isApproved: !!freshProfile.is_approved, isAdmin: !!freshProfile.is_admin,
+              goalExerciseWeekly: freshProfile.goal_exercise_weekly, goalAlcoholFreeDays: freshProfile.goal_alcohol_free_days,
+              goalWeightKg: freshProfile.goal_weight_kg, goalBpSysMax: freshProfile.goal_bp_sys_max, goalBpDiaMax: freshProfile.goal_bp_dia_max,
+              goalSugarMax: freshProfile.goal_sugar_max
             });
           }
           setIsSettingsOpen(false);
@@ -459,23 +550,89 @@
 
       const handleLogout = async () => { await sb.auth.signOut(); setIsSettingsOpen(false); };
 
+      // ★ 데이터 백업/내보내기 (CSV 다운로드) — 로그인한 본인의 전체 기록을 하나의 CSV 파일로 내려받음
+      const handleExportCsv = async () => {
+        setIsExporting(true);
+        setAccountError('');
+        try {
+          const { data, error } = await withAuthRetry(() =>
+            sb.from('logs').select('*').order('log_date', { ascending: true }).order('log_time', { ascending: true })
+          );
+          if (error) throw error;
+          if (!data || data.length === 0) {
+            setAccountError('내보낼 기록이 없습니다.');
+            return;
+          }
+          const headers = ['날짜', '시간', '카테고리', '제목', '내용', '메모', 'AI 분석', '음주여부', '혈압(수축기)', '혈압(이완기)', '맥박', '혈당', '체중(kg)', '수면시간(h)'];
+          const rows = data.map(row => {
+            const raw = row.raw_input || {};
+            const bio = raw.biometrics || {};
+            return [
+              row.log_date,
+              String(row.log_time || '').slice(0, 5),
+              row.category,
+              row.food_name || '',
+              (row.ingredients || []).join(' / '),
+              raw.memo || '',
+              row.analysis || '',
+              row.is_alcohol ? 'Y' : 'N',
+              bio.bp_sys ?? '',
+              bio.bp_dia ?? '',
+              bio.pulse ?? '',
+              bio.sugar ?? '',
+              bio.weight ?? '',
+              bio.sleep_hours ?? '',
+            ];
+          });
+          const csvBody = [headers, ...rows].map(r => r.map(escapeCsvField).join(',')).join('\r\n');
+          const csvContent = '﻿' + csvBody; // Excel에서 한글 깨짐 방지용 UTF-8 BOM
+          const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `식단기록_백업_${formatDate(new Date())}.csv`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          showNotice('✅ CSV 파일을 내려받았습니다.');
+        } catch (err) {
+          setAccountError('내보내기 중 오류가 발생했습니다: ' + (err.message || err));
+        } finally {
+          setIsExporting(false);
+        }
+      };
+
       // ★ 관리자 전용: 전체 회원 목록 불러오기 (is_admin RLS 정책 덕분에 본인 외 행도 조회 가능)
       const loadMembers = async () => {
         setIsLoadingMembers(true);
         const { data, error } = await sb.from('profiles').select('*').order('created_at', { ascending: false });
-        if (error) setSysError(error.message); else setMemberList(data || []);
+        if (error) reportFatalError(error); else setMemberList(data || []);
         setIsLoadingMembers(false);
       };
 
+      // ★ 관리자 전용: 회원별 사용 현황 (기록 개수/활동일수/마지막 기록일만 — 실제 기록 내용은 절대 포함되지 않음)
+      // admin_user_activity_stats()는 SECURITY DEFINER 함수 내부에서 is_admin()을 다시 확인하므로,
+      // 관리자가 아니면 항상 빈 배열이 돌아온다.
+      const [memberStats, setMemberStats] = useState({});
+      const loadMemberStats = async () => {
+        const { data, error } = await sb.rpc('admin_user_activity_stats');
+        if (!error && data) {
+          const map = {};
+          data.forEach(row => { map[row.user_id] = row; });
+          setMemberStats(map);
+        }
+      };
+
       useEffect(() => {
-        if (isAdminOpen) loadMembers();
+        if (isAdminOpen) { loadMembers(); loadMemberStats(); }
       }, [isAdminOpen]);
 
       // ★ 관리자 전용: 승인/차단 토글
       const toggleMemberApproval = async (member) => {
         setMemberActionId(member.id);
         const { error } = await sb.from('profiles').update({ is_approved: !member.is_approved }).eq('id', member.id);
-        if (error) setSysError(error.message);
+        if (error) reportFatalError(error);
         else setMemberList(prev => prev.map(m => m.id === member.id ? { ...m, is_approved: !m.is_approved } : m));
         setMemberActionId(null);
       };
@@ -489,7 +646,7 @@
           setMemberList(prev => prev.filter(m => m.id !== member.id));
           showNotice(`🗑️ ${member.username}님 계정을 삭제했습니다.`);
         } catch (err) {
-          setSysError(err.message);
+          reportFatalError(err);
         } finally {
           setMemberActionId(null);
         }
@@ -586,6 +743,36 @@
       };
 
       // ★ 기록 저장/재분석 (구글 앱스스크립트 대신 Supabase Edge Function 호출)
+      // ★ AI 응답을 기다리다가 사용자가 직접 취소하는 경우 — 실제 진행 중인 요청을 중단하고 로딩 상태를 정리
+      const handleCancelLoading = () => {
+        if (abortControllerRef.current) abortControllerRef.current.abort();
+        setIsAnalyzing(false);
+        setReanalyzingId(null);
+        setIsGeneratingReport(false);
+        setIsGeneratingDaily(false);
+        setSysError("");
+        showNotice('요청을 취소했습니다.');
+      };
+
+      // ★ 사진/한줄기록 분석 결과에 대한 후속 질문 (기록당 1회, 서버에서도 재확인함)
+      const handleAskFollowup = async (logId) => {
+        const q = followupDraft.trim();
+        if (!q) return;
+        setSubmittingFollowupId(logId);
+        try {
+          const res = await callAI('followupQuestion', { id: logId, question: q, disease: profile?.disease || '', aiMode: profile?.aiMode || 'normal' });
+          const applyAnswer = (item) => item.id === logId ? { ...item, followupQuestion: res.question, followupAnswer: res.answer } : item;
+          setLogs(prev => prev.map(applyAnswer));
+          setPeriodLogs(prev => prev.map(applyAnswer));
+          setOpenFollowupId(null);
+          setFollowupDraft('');
+        } catch (err) {
+          reportFatalError(err);
+        } finally {
+          setSubmittingFollowupId(null);
+        }
+      };
+
       const handleUploadConfirm = () => {
         if (draft.type === 'text' && !draft.naturalText.trim()) return setSysError("내용을 입력해주세요!");
         if (draft.type === 'biometrics' && !draft.bp_sys && !draft.bp_dia && !draft.pulse && !draft.sugar && !draft.weight && !draft.sleep_hours) return setSysError("최소 하나 이상의 수치를 입력해주세요!");
@@ -606,32 +793,40 @@
         setSysError("");
         nudgeViewportRepaint(); // ★ [버그수정] 메인화면 복귀 직후 터치 좌표 어긋남 방지
 
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+
+        // ★ 사용자가 직접 취소하지 않아도, 요청이 지나치게 오래 걸리면(90초) 안전장치로 강제 중단
         const timeoutId = setTimeout(() => {
+          controller.abort();
           if (isEdit) setReanalyzingId(null); else setIsAnalyzing(false);
-          setSysError("⏳ 서버 통신이 지연되고 있습니다. 잠시 후 시도해주세요.");
-        }, 35000);
+          reportFatalError('서버 통신이 지연되고 있습니다.');
+        }, 90000);
 
         (async () => {
           try {
             if (isEdit) {
               setReanalyzingId(editId);
-              const newData = await callAI('reanalyze', { id: editId, ...payload });
+              const newData = await callAI('reanalyze', { id: editId, ...payload }, controller.signal);
               clearTimeout(timeoutId);
               if (newData.date !== currentDate && activeTab === 'home') setLogs(prev => prev.filter(item => item.id !== editId));
               else setLogs(prev => prev.map(item => item.id === editId ? { ...item, ...newData } : item));
               setReanalyzingId(null);
               if (finalCategory !== '운동' && finalCategory !== '생체기록') fetchFrequentFoods();
+              fetchGoalStats();
             } else {
               setIsAnalyzing(true);
-              const newLog = await callAI('analyze', payload);
+              const newLog = await callAI('analyze', payload, controller.signal);
               clearTimeout(timeoutId);
               if (newLog.date === currentDate && activeTab === 'home') setLogs(prev => [newLog, ...prev]);
               setIsAnalyzing(false);
               if (finalCategory !== '운동' && finalCategory !== '생체기록') fetchFrequentFoods();
+              fetchGoalStats();
             }
           } catch (err) {
             clearTimeout(timeoutId);
-            setSysError(err.message);
+            if (err.name === 'AbortError') return; // 사용자가 취소했거나 위 안전장치로 중단된 경우 — 상태는 이미 정리됨
+            reportFatalError(err);
             if (isEdit) setReanalyzingId(null); else setIsAnalyzing(false);
           }
         })();
@@ -654,17 +849,21 @@
           const { error } = await sb.from('logs').delete().eq('id', id);
           if (error) throw error;
         } catch (err) {
-          setSysError(err.message); setLogs(prevLogs);
+          reportFatalError(err); setLogs(prevLogs);
         }
       };
 
       const handleGeneratePeriodReport = () => {
         if(periodLogs.length === 0) return setSysError("분석할 기록이 없습니다.");
         setIsGeneratingReport(true);
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+        // ★ 사용자가 직접 취소하지 않아도, 요청이 지나치게 오래 걸리면(90초) 안전장치로 강제 중단
         const timeoutId = setTimeout(() => {
+          controller.abort();
           setIsGeneratingReport(false);
-          setSysError("⏳ 리포트 생성에 시간이 오래 걸립니다. 다시 시도해주세요.");
-        }, 35000);
+          reportFatalError('리포트 생성에 시간이 오래 걸립니다.');
+        }, 90000);
 
         let summaryData = "";
         if (statsMode === 'month') {
@@ -702,10 +901,12 @@
 
         (async () => {
           try {
-            const res = await callAI('periodReport', { periodStart: activeRange.start, summaryData, isMonth: statsMode === 'month', disease: profile?.disease, aiMode: profile?.aiMode || 'normal' });
+            const res = await callAI('periodReport', { periodStart: activeRange.start, summaryData, isMonth: statsMode === 'month', disease: profile?.disease, aiMode: profile?.aiMode || 'normal' }, controller.signal);
             clearTimeout(timeoutId); setAiReport(res); setIsGeneratingReport(false);
           } catch (err) {
-            clearTimeout(timeoutId); setSysError(err.message); setIsGeneratingReport(false);
+            clearTimeout(timeoutId);
+            if (err.name === 'AbortError') return;
+            reportFatalError(err); setIsGeneratingReport(false);
           }
         })();
       };
@@ -713,10 +914,14 @@
       const handleGenerateDailyReport = () => {
         if(logs.length === 0) return setSysError("분석할 기록이 없습니다. 먼저 기록해주세요.");
         setIsGeneratingDaily(true);
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+        // ★ 사용자가 직접 취소하지 않아도, 요청이 지나치게 오래 걸리면(90초) 안전장치로 강제 중단
         const timeoutId = setTimeout(() => {
+          controller.abort();
           setIsGeneratingDaily(false);
-          setSysError("⏳ 하루 평가 통신이 지연되고 있습니다. 잠시 후 시도해주세요.");
-        }, 30000);
+          reportFatalError('하루 평가 통신이 지연되고 있습니다.');
+        }, 90000);
 
         let summaryLines = logs.map(l => {
           if (l.category === '생체기록') return `[${l.time}] 생체: ${Array.isArray(l.ingredients) ? l.ingredients.join(', ') : l.ingredients}`;
@@ -726,10 +931,12 @@
 
         (async () => {
           try {
-            const res = await callAI('dailyReport', { date: currentDate, summaryData, disease: profile?.disease, aiMode: profile?.aiMode || 'normal' });
+            const res = await callAI('dailyReport', { date: currentDate, summaryData, disease: profile?.disease, aiMode: profile?.aiMode || 'normal' }, controller.signal);
             clearTimeout(timeoutId); setDailyReport(res); setIsGeneratingDaily(false);
           } catch (err) {
-            clearTimeout(timeoutId); setSysError("하루 평가 실패: " + err.message); setIsGeneratingDaily(false);
+            clearTimeout(timeoutId);
+            if (err.name === 'AbortError') return;
+            reportFatalError(err); setIsGeneratingDaily(false);
           }
         })();
       };
@@ -841,6 +1048,27 @@
         : periodGrades.map(g => g.report_date);
       const gradeRank = { A: 5, B: 4, C: 3, D: 2, F: 1 };
 
+      // ★ 목표 달성 현황: 연속 금주일수 (마지막 음주일 다음날부터 오늘까지 일수, 음주 기록이 아예 없으면 첫 기록일부터 계산)
+      const alcoholFreeStreak = (() => {
+        if (lastAlcoholDate === undefined) return null; // 아직 로딩 전
+        const refDate = lastAlcoholDate || firstLogDate;
+        if (!refDate) return null; // 기록 자체가 없음
+        const todayStr = formatDate(new Date());
+        const diffDays = Math.round((parseDate(todayStr) - parseDate(refDate)) / 86400000);
+        return lastAlcoholDate ? diffDays : diffDays + 1;
+      })();
+
+      const exerciseDaysThisPeriod = new Set(periodLogs.filter(l => l.category === '운동').map(l => l.date)).size;
+      // 월간 모드에서는 "주당 목표"를 그 달의 주 수만큼 환산해서 비교 (예: 주 3회 목표 → 31일이면 약 13회)
+      const periodDaysCount = activeRange.start && activeRange.end
+        ? Math.round((parseDate(activeRange.end) - parseDate(activeRange.start)) / 86400000) + 1
+        : 7;
+      const exerciseGoalTarget = profile?.goalExerciseWeekly
+        ? (statsMode === 'week' ? profile.goalExerciseWeekly : Math.round(profile.goalExerciseWeekly * (periodDaysCount / 7)))
+        : 0;
+
+      const hasAnyGoal = !!(profile?.goalExerciseWeekly || profile?.goalAlcoholFreeDays || profile?.goalWeightKg || profile?.goalBpSysMax || profile?.goalBpDiaMax || profile?.goalSugarMax);
+
       // ★ 로그인 / 회원가입 화면 (기존 최초 온보딩 폼 대체)
       const AuthForm = () => (
         <div className="w-full max-w-sm mx-auto">
@@ -921,11 +1149,51 @@
                 <p className="text-xs text-gray-400 mt-1">기분에 따라 나를 대하는 AI의 피드백 톤을 조절해보세요.</p>
               </div>
             </div>
+
+            <div className="pt-4 border-t border-gray-100">
+              <h3 className="text-sm font-bold text-gray-700 mb-3">🎯 목표 설정 (선택, 비워두면 목표 없음)</h3>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs font-medium text-gray-500 block mb-1">주당 운동 목표(회)</label>
+                  <input type="number" min="0" name="goalExerciseWeekly" defaultValue={profile?.goalExerciseWeekly || ''} placeholder="예: 3" className="w-full border p-3 rounded-xl bg-gray-50 outline-none text-sm" />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-500 block mb-1">연속 금주 목표(일)</label>
+                  <input type="number" min="0" name="goalAlcoholFreeDays" defaultValue={profile?.goalAlcoholFreeDays || ''} placeholder="예: 30" className="w-full border p-3 rounded-xl bg-gray-50 outline-none text-sm" />
+                </div>
+                <div className="col-span-2">
+                  <label className="text-xs font-medium text-gray-500 block mb-1">목표 체중(kg)</label>
+                  <input type="number" step="0.1" name="goalWeightKg" defaultValue={profile?.goalWeightKg || ''} placeholder="예: 65" className="w-full border p-3 rounded-xl bg-gray-50 outline-none text-sm" />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-500 block mb-1">목표 혈압 상한(수축기)</label>
+                  <input type="number" name="goalBpSysMax" defaultValue={profile?.goalBpSysMax || ''} placeholder="예: 120" className="w-full border p-3 rounded-xl bg-gray-50 outline-none text-sm" />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-500 block mb-1">목표 혈압 상한(이완기)</label>
+                  <input type="number" name="goalBpDiaMax" defaultValue={profile?.goalBpDiaMax || ''} placeholder="예: 80" className="w-full border p-3 rounded-xl bg-gray-50 outline-none text-sm" />
+                </div>
+                <div className="col-span-2">
+                  <label className="text-xs font-medium text-gray-500 block mb-1">목표 공복혈당 상한(mg/dL)</label>
+                  <input type="number" name="goalSugarMax" defaultValue={profile?.goalSugarMax || ''} placeholder="예: 100" className="w-full border p-3 rounded-xl bg-gray-50 outline-none text-sm" />
+                </div>
+              </div>
+            </div>
+
             {accountError && <p className="text-sm text-red-600 font-bold text-center">{accountError}</p>}
             <button type="submit" disabled={accountSaving} className="w-full bg-blue-600 text-white py-4 rounded-xl text-lg font-bold shadow-lg mt-6 disabled:opacity-60">{accountSaving ? '저장 중...' : '저장하기'}</button>
             <button type="button" onClick={() => setIsSettingsOpen(false)} className="w-full bg-gray-200 text-gray-700 py-3 rounded-xl font-bold mt-2">취소</button>
-            <button type="button" onClick={handleLogout} className="w-full bg-red-50 text-red-600 py-3 rounded-xl font-bold mt-2">로그아웃</button>
           </form>
+
+          <div className="pt-4 mt-4 border-t border-gray-100">
+            <h3 className="text-sm font-bold text-gray-700 mb-1">📦 데이터 백업</h3>
+            <p className="text-xs text-gray-400 mb-3">지금까지 기록한 전체 식단·운동·생체기록을 CSV 파일로 내려받습니다.</p>
+            <button type="button" disabled={isExporting} onClick={handleExportCsv} className="w-full bg-gray-100 text-gray-700 py-3 rounded-xl font-bold disabled:opacity-60">
+              {isExporting ? '내보내는 중...' : '📥 CSV로 내보내기'}
+            </button>
+          </div>
+
+          <button type="button" onClick={handleLogout} className="w-full bg-red-50 text-red-600 py-3 rounded-xl font-bold mt-4">로그아웃</button>
         </div>
       );
 
@@ -949,6 +1217,13 @@
                       {m.is_admin && <span className="text-[10px] bg-indigo-100 text-indigo-700 font-bold px-1.5 py-0.5 rounded">관리자</span>}
                     </div>
                     <p className="text-xs text-gray-400 mt-1">{m.created_at ? String(m.created_at).slice(0, 10) : ''} 가입</p>
+                    {memberStats[m.id] ? (
+                      <p className="text-xs text-blue-600 mt-1 font-medium">
+                        최근 {Math.max(0, Math.round((parseDate(formatDate(new Date())) - parseDate(memberStats[m.id].last_log_date)) / 86400000))}일 전 활동 · 최근 30일 {memberStats[m.id].active_days_30d}일 기록 · 총 {memberStats[m.id].total_logs}건
+                      </p>
+                    ) : (
+                      <p className="text-xs text-gray-300 mt-1">기록 없음</p>
+                    )}
                   </div>
                   {m.is_admin ? (
                     <span className="text-xs font-bold text-gray-400 px-3 py-2">-</span>
@@ -1143,7 +1418,7 @@
                         {images.length > 0 && (
                           <div className="flex gap-2 mb-3 overflow-x-auto no-scrollbar pt-1">
                             {images.map((src, i) => (
-                              <img key={i} src={src} className="w-20 h-20 md:w-24 md:h-24 object-cover rounded-2xl shrink-0 border border-gray-100 shadow-sm" />
+                              <img key={i} src={src} onClick={() => setLightboxImage(src)} className="w-20 h-20 md:w-24 md:h-24 object-cover rounded-2xl shrink-0 border border-gray-100 shadow-sm cursor-pointer active:opacity-80 transition" />
                             ))}
                           </div>
                         )}
@@ -1151,6 +1426,50 @@
                         <p className="text-sm bg-blue-50 text-blue-800 p-3 rounded-xl leading-snug whitespace-pre-wrap">
                           {log.analysis}
                         </p>
+
+                        {log.followupAnswer ? (
+                          <div className="mt-2 bg-indigo-50 rounded-xl p-3">
+                            <p className="text-xs font-bold text-indigo-500 mb-1">🤔 {log.followupQuestion}</p>
+                            <p className="text-sm text-indigo-800 whitespace-pre-wrap leading-snug">{log.followupAnswer}</p>
+                          </div>
+                        ) : openFollowupId === log.id ? (
+                          <div className="mt-2 flex flex-col gap-2">
+                            <textarea
+                              value={followupDraft}
+                              onChange={e => setFollowupDraft(e.target.value)}
+                              placeholder="이 분석에 대해 궁금한 점을 물어보세요 (기록당 1회)"
+                              rows={2}
+                              maxLength={300}
+                              className="w-full text-sm bg-gray-50 border border-gray-200 rounded-xl p-2.5 outline-none focus:border-blue-500 resize-none"
+                            />
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                disabled={submittingFollowupId === log.id || !followupDraft.trim()}
+                                onClick={() => handleAskFollowup(log.id)}
+                                className="flex-1 bg-blue-600 text-white text-xs font-bold py-2 rounded-lg disabled:opacity-60"
+                              >
+                                {submittingFollowupId === log.id ? '질문 중...' : '질문하기'}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={submittingFollowupId === log.id}
+                                onClick={() => { setOpenFollowupId(null); setFollowupDraft(''); }}
+                                className="px-3 bg-gray-100 text-gray-500 text-xs font-bold py-2 rounded-lg disabled:opacity-60"
+                              >
+                                취소
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => { setOpenFollowupId(log.id); setFollowupDraft(''); }}
+                            className="mt-2 text-xs font-bold text-blue-500 hover:text-blue-700"
+                          >
+                            🤔 더 물어보기
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
@@ -1160,6 +1479,64 @@
 
             {activeTab === 'stats' && (
               <div className="space-y-6 animate-fade-in">
+                {hasAnyGoal && (
+                  <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
+                    <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-1">🎯 목표 달성 현황</h3>
+                    <div className="space-y-4">
+                      {profile.goalExerciseWeekly > 0 && (
+                        <div>
+                          <div className="flex justify-between text-xs font-bold text-gray-600 mb-1.5">
+                            <span>🏃‍♂️ {statsMode === 'month' ? '이번 달' : '이번 주'} 운동</span>
+                            <span>{exerciseDaysThisPeriod} / {exerciseGoalTarget}회{statsMode === 'month' ? ' (주 목표 환산)' : ''}</span>
+                          </div>
+                          <div className="w-full h-2.5 bg-gray-100 rounded-full overflow-hidden">
+                            <div className="h-full bg-green-500 rounded-full" style={{width: `${Math.min(100, (exerciseDaysThisPeriod / exerciseGoalTarget) * 100)}%`}}></div>
+                          </div>
+                        </div>
+                      )}
+                      {profile.goalAlcoholFreeDays > 0 && (
+                        <div>
+                          <div className="flex justify-between text-xs font-bold text-gray-600 mb-1.5">
+                            <span>🍺 연속 금주</span>
+                            <span>{alcoholFreeStreak !== null ? alcoholFreeStreak : '-'} / {profile.goalAlcoholFreeDays}일</span>
+                          </div>
+                          <div className="w-full h-2.5 bg-gray-100 rounded-full overflow-hidden">
+                            <div className="h-full bg-orange-500 rounded-full" style={{width: `${alcoholFreeStreak !== null ? Math.min(100, (alcoholFreeStreak / profile.goalAlcoholFreeDays) * 100) : 0}%`}}></div>
+                          </div>
+                        </div>
+                      )}
+                      {profile.goalWeightKg > 0 && (
+                        <div className="flex justify-between items-center text-xs font-bold text-gray-600">
+                          <span>⚖️ 목표 체중</span>
+                          <span>
+                            {latestBiometrics?.weight ? `현재 ${latestBiometrics.weight}kg → 목표 ${profile.goalWeightKg}kg (${Math.abs(latestBiometrics.weight - profile.goalWeightKg).toFixed(1)}kg ${latestBiometrics.weight > profile.goalWeightKg ? '감량' : '증량'} 필요)` : `목표 ${profile.goalWeightKg}kg (최근 체중 기록 없음)`}
+                          </span>
+                        </div>
+                      )}
+                      {(profile.goalBpSysMax > 0 || profile.goalBpDiaMax > 0) && (
+                        <div className="flex justify-between items-center text-xs font-bold text-gray-600">
+                          <span>🩺 목표 혈압</span>
+                          {latestBiometrics?.bp_sys && latestBiometrics?.bp_dia ? (
+                            <span className={`px-2 py-1 rounded-lg ${latestBiometrics.bp_sys <= (profile.goalBpSysMax || 999) && latestBiometrics.bp_dia <= (profile.goalBpDiaMax || 999) ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                              최근 {latestBiometrics.bp_sys}/{latestBiometrics.bp_dia} (목표 {profile.goalBpSysMax || '-'}/{profile.goalBpDiaMax || '-'} 이하)
+                            </span>
+                          ) : <span>목표 {profile.goalBpSysMax || '-'}/{profile.goalBpDiaMax || '-'} 이하 (최근 기록 없음)</span>}
+                        </div>
+                      )}
+                      {profile.goalSugarMax > 0 && (
+                        <div className="flex justify-between items-center text-xs font-bold text-gray-600">
+                          <span>🩸 목표 공복혈당</span>
+                          {latestBiometrics?.sugar ? (
+                            <span className={`px-2 py-1 rounded-lg ${latestBiometrics.sugar <= profile.goalSugarMax ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                              최근 {latestBiometrics.sugar} (목표 {profile.goalSugarMax} 이하)
+                            </span>
+                          ) : <span>목표 {profile.goalSugarMax} 이하 (최근 기록 없음)</span>}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {statsMode === 'week' ? (
                   <div className="space-y-4">
                     <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
@@ -1613,15 +1990,43 @@
             </div>
           )}
 
+          {/* ★ 타임라인/업로드 미리보기 사진을 탭했을 때 원본 크기로 보여주는 라이트박스 */}
+          {lightboxImage && (
+            <div
+              className="fixed inset-0 z-[120] bg-black/90 flex items-center justify-center p-4"
+              onClick={() => setLightboxImage(null)}
+            >
+              <button
+                type="button"
+                onClick={() => setLightboxImage(null)}
+                className="absolute top-5 right-5 text-white bg-white/10 hover:bg-white/20 w-10 h-10 rounded-full flex items-center justify-center text-xl font-bold"
+              >
+                ✕
+              </button>
+              <img
+                src={lightboxImage}
+                onClick={(e) => e.stopPropagation()}
+                className="max-w-full max-h-full object-contain rounded-xl"
+              />
+            </div>
+          )}
+
           {(isAnalyzing || reanalyzingId || isGeneratingReport || isGeneratingDaily) && (
-            <div className="fixed inset-0 z-[100] bg-black/70 flex flex-col items-center justify-center text-white backdrop-blur-sm touch-none">
+            <div className="fixed inset-0 z-[100] bg-black/70 flex flex-col items-center justify-center text-white backdrop-blur-sm touch-none px-6">
               <div className="loader border-4 border-white border-t-transparent w-16 h-16 mb-6"></div>
               <p className="text-xl font-bold animate-pulse text-center">
                 {isGeneratingReport ? '🤖 AI가 거시적 데이터를 분석 중입니다...' :
                  isGeneratingDaily ? '🤖 AI가 하루 총평을 작성 중입니다...' :
                  '🤖 AI가 꼼꼼하게 분석 중입니다...'}
               </p>
-              <p className="text-sm mt-2 text-gray-300">화면을 끄지 말고 잠시만 기다려주세요</p>
+              {loadingElapsed < 30 ? (
+                <p className="text-sm mt-2 text-gray-300">화면을 끄지 말고 잠시만 기다려주세요</p>
+              ) : (
+                <div className="mt-5 flex flex-col items-center gap-3">
+                  <p className="text-sm text-yellow-300 text-center leading-relaxed">시간이 오래 걸리고 있어요.<br/>계속 기다리거나 취소할 수 있어요.</p>
+                  <button type="button" onClick={handleCancelLoading} className="bg-white/10 border border-white/40 text-white px-5 py-2.5 rounded-xl font-bold hover:bg-white/20 active:scale-95 transition">취소하기</button>
+                </div>
+              )}
             </div>
           )}
 
@@ -1737,7 +2142,7 @@
                   <div className="mb-5">
                     <div className="flex gap-2 mb-3 overflow-x-auto no-scrollbar">
                       {draft.data.map((src, i) => (
-                        <img key={i} src={src} className="w-32 h-32 object-cover rounded-2xl bg-gray-100 shrink-0 border border-gray-200" />
+                        <img key={i} src={src} onClick={() => setLightboxImage(src)} className="w-32 h-32 object-cover rounded-2xl bg-gray-100 shrink-0 border border-gray-200 cursor-pointer active:opacity-80 transition" />
                       ))}
                     </div>
                     <input type="text" placeholder={draft.category === '운동' ? "추가 메모 (예: 스쿼트 50개 추가함)" : "추가 메모 (예: 밥은 반 공기만 먹음)"} value={draft.memo} onChange={e => setDraft({...draft, memo: e.target.value})} onBlur={handleInputBlur} className="w-full bg-gray-50 border border-gray-200 rounded-xl p-4 outline-none focus:border-blue-500 text-sm" />
