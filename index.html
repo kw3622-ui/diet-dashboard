@@ -242,6 +242,27 @@
       const [followupDraft, setFollowupDraft] = useState('');
       const [submittingFollowupId, setSubmittingFollowupId] = useState(null);
 
+      // ★ 홈/통계 화면 좌우 스와이프로 전날·다음날(또는 전주·다음주/전월·다음월) 이동
+      const touchStartRef = useRef(null);
+      const SWIPE_MIN_DISTANCE = 60;
+      const handleContentTouchStart = (e) => {
+        // 사진 미리보기/그래프처럼 자체적으로 가로 스크롤되는 영역에서 시작된 터치는 날짜 스와이프로 취급하지 않음
+        if (e.target.closest && e.target.closest('.overflow-x-auto')) { touchStartRef.current = null; return; }
+        const t = e.touches[0];
+        touchStartRef.current = { x: t.clientX, y: t.clientY };
+      };
+      const handleContentTouchEnd = (e) => {
+        if (!touchStartRef.current) return;
+        const t = e.changedTouches[0];
+        const dx = t.clientX - touchStartRef.current.x;
+        const dy = t.clientY - touchStartRef.current.y;
+        touchStartRef.current = null;
+        if (Math.abs(dx) < SWIPE_MIN_DISTANCE) return; // 너무 짧은 움직임은 무시
+        if (Math.abs(dx) < Math.abs(dy) * 1.5) return; // 세로 스크롤과 헷갈리는 대각선 움직임은 무시
+        if (dx < 0) changeDate(1); // 왼쪽으로 스와이프 -> 다음날/다음주/다음달
+        else changeDate(-1); // 오른쪽으로 스와이프 -> 전날/전주/전달
+      };
+
       // ★ AI 호출 취소/지연 안내용 — 진행 중인 fetch를 중단할 수 있는 컨트롤러와, 로딩이 시작된 이후 경과 초
       const abortControllerRef = useRef(null);
       const [loadingElapsed, setLoadingElapsed] = useState(0);
@@ -1347,7 +1368,7 @@
             )}
           </div>
 
-          <div className="p-5 space-y-6">
+          <div className="p-5 space-y-6" onTouchStart={handleContentTouchStart} onTouchEnd={handleContentTouchEnd}>
 
             {activeTab === 'home' && (
               <>
