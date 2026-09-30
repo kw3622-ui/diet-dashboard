@@ -895,6 +895,7 @@
           biometrics: draft.type === 'biometrics' ? { bp_sys: draft.bp_sys ? Number(draft.bp_sys) : null, bp_dia: draft.bp_dia ? Number(draft.bp_dia) : null, pulse: draft.pulse ? Number(draft.pulse) : null, sugar: draft.sugar ? Number(draft.sugar) : null, weight: draft.weight ? Number(draft.weight) : null, sleep_hours: draft.sleep_hours ? Number(draft.sleep_hours) : null } : null,
           disease: profile?.disease || '',
           aiMode: profile?.aiMode || 'normal',
+          profile: { age: profile?.age, gender: profile?.gender, height: profile?.height },
           existingFoodName: draft.existingFoodName, existingIngredients: draft.existingIngredients
         };
         const isEdit = draft.isEditMode; const editId = draft.editLogId;
@@ -993,7 +994,7 @@
 
         (async () => {
           try {
-            const res = await callAI('periodReport', { periodStart: activeRange.start, summaryData, isMonth: statsMode === 'month', disease: profile?.disease, aiMode: profile?.aiMode || 'normal' }, controller.signal);
+            const res = await callAI('periodReport', { periodStart: activeRange.start, summaryData, isMonth: statsMode === 'month', disease: profile?.disease, aiMode: profile?.aiMode || 'normal', profile: { age: profile?.age, gender: profile?.gender, height: profile?.height } }, controller.signal);
             clearTimeout(timeoutId); setAiReport(res); setIsGeneratingReport(false);
           } catch (err) {
             clearTimeout(timeoutId);
@@ -1023,7 +1024,7 @@
 
         (async () => {
           try {
-            const res = await callAI('dailyReport', { date: currentDate, summaryData, disease: profile?.disease, aiMode: profile?.aiMode || 'normal' }, controller.signal);
+            const res = await callAI('dailyReport', { date: currentDate, summaryData, disease: profile?.disease, aiMode: profile?.aiMode || 'normal', profile: { age: profile?.age, gender: profile?.gender, height: profile?.height } }, controller.signal);
             clearTimeout(timeoutId); setDailyReport(res); setIsGeneratingDaily(false);
           } catch (err) {
             clearTimeout(timeoutId);
