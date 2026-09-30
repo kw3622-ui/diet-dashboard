@@ -124,6 +124,18 @@
       });
     };
 
+    // v0.0.1: 글자 영역을 눌러도 날짜/시간 선택창을 즉시 연다.
+    // 기본 클릭 동작은 막지 않아 기존 선택 아이콘과 미지원 브라우저 동작을 유지한다.
+    const openDateTimePicker = (event) => {
+      const input = event.currentTarget;
+      if (typeof input.showPicker !== 'function') return;
+      try {
+        input.showPicker();
+      } catch (error) {
+        // 브라우저가 선택창 호출을 제한하면 기본 입력 동작을 유지한다.
+      }
+    };
+
     const formatDate = (d) => { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 
     // ★ 백업/내보내기용 CSV 필드 이스케이프 (콤마·따옴표·줄바꿈 포함 시 큰따옴표로 감싸고 내부 따옴표는 두 번씩)
@@ -2099,14 +2111,14 @@
                 <div className="mb-6 flex gap-3">
                   <div className="flex-1">
                     <label className="text-sm font-bold text-gray-600 mb-2 block">날짜 지정</label>
-                    <input type="date" value={draft.editDate} onChange={e => setDraft({...draft, editDate: e.target.value})} onBlur={handleInputBlur} className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3 outline-none focus:border-blue-500 text-sm" />
+                    <input type="date" value={draft.editDate} onClick={openDateTimePicker} onChange={e => setDraft({...draft, editDate: e.target.value})} onBlur={handleInputBlur} className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3 outline-none focus:border-blue-500 text-sm" />
                   </div>
                   <div className="flex-1">
                     <label className="text-sm font-bold text-gray-600 mb-2 block">시간 지정</label>
                     {draft.isCamera && !draft.isEditMode ? (
                       <div className="w-full bg-gray-100 border border-gray-200 rounded-xl p-3 text-gray-500 font-medium text-center text-sm cursor-not-allowed">{draft.editTime} (자동)</div>
                     ) : (
-                      <input type="time" value={draft.editTime} onChange={e => setDraft({...draft, editTime: e.target.value})} onBlur={handleInputBlur} className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3 outline-none focus:border-blue-500 text-sm" />
+                      <input type="time" value={draft.editTime} onClick={openDateTimePicker} onChange={e => setDraft({...draft, editTime: e.target.value})} onBlur={handleInputBlur} className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3 outline-none focus:border-blue-500 text-sm" />
                     )}
                   </div>
                 </div>
