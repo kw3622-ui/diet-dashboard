@@ -225,6 +225,24 @@
 
     const defaultCategories = ['아침식사', '점심식사', '저녁식사', '간식', '야식', '운동'];
 
+    // 음주 기록이 없는 날을 금주로 계산한다. 오늘은 포함하고 미래 날짜는 제외한다.
+    function getAlcoholGoalProgress(start, end, today, logs, weeklyGoal, isMonth) {
+      if (!start || !end || start > end) return { days: 0, alcoholFree: 0, target: 0 };
+      const dayNumber = (date) => Date.parse(date + 'T00:00:00Z') / 86400000;
+      const periodDays = dayNumber(end) - dayNumber(start) + 1;
+      const until = end < today ? end : today;
+      const days = Math.max(0, dayNumber(until) - dayNumber(start) + 1);
+      const alcoholDays = new Set(logs.filter(log =>
+        log.isAlcohol && log.date >= start && log.date <= until
+      ).map(log => log.date)).size;
+      const goal = Number(weeklyGoal) || 0;
+      return {
+        days,
+        alcoholFree: Math.max(0, days - alcoholDays),
+        target: isMonth ? Math.round(goal * periodDays / 7) : goal
+      };
+    }
+
     function App() {
       const [session, setSession] = useState(undefined); // undefined = 확인 중, null = 비로그인, 객체 = 로그인됨
       const [profile, setProfile] = useState(null);
@@ -308,9 +326,7 @@
       // ★ 자주 먹는 음식 (최근 30일 기록 기준 빈도순, 입력창 위 칩으로 표시)
       const [frequentFoods, setFrequentFoods] = useState([]);
 
-      // ★ 목표 달성 현황용 (연속 금주일수 계산 + 가장 최근 생체 수치)
-      const [lastAlcoholDate, setLastAlcoholDate] = useState(undefined); // undefined=미로딩, null=음주기록 없음
-      const [firstLogDate, setFirstLogDate] = useState(null);
+      // ★ 목표 달성 현황용 가장 최근 생체 수치
       const [latestBiometrics, setLatestBiometrics] = useState(null);
       const naturalTextRef = useRef(null);
 
@@ -363,7 +379,7 @@
               username: data.username, height: data.height, weight: data.weight, age: data.age,
               gender: data.gender, disease: data.disease || '', aiMode: data.ai_mode || 'normal',
               isApproved: !!data.is_approved, isAdmin: !!data.is_admin,
-              goalExerciseWeekly: data.goal_exercise_weekly, goalAlcoholFreeDays: data.goal_alcohol_free_days,
+              goalExerciseWeekly: data.goal_exercise_weekly, goalAlcoholFreeWeekly: data.goal_alcohol_free_weekly,
               goalWeightKg: data.goal_weight_kg, goalBpSysMax: data.goal_bp_sys_max, goalBpDiaMax: data.goal_bp_dia_max,
               goalSugarMax: data.goal_sugar_max
             });
@@ -397,15 +413,9 @@
         fetchFrequentFoods();
       }, [session]);
 
-      // ★ 목표 달성 현황 계산용 데이터 (마지막 음주일, 첫 기록일, 가장 최근 생체 수치)
+      // ★ 목표 달성 현황 계산용 데이터 (가장 최근 생체 수치)
       const fetchGoalStats = async () => {
-        const [alcRes, firstRes, bioRes] = await Promise.all([
-          sb.from('logs').select('log_date').eq('is_alcohol', true).order('log_date', { ascending: false }).limit(1),
-          sb.from('logs').select('log_date').order('log_date', { ascending: true }).limit(1),
-          sb.from('logs').select('log_date, raw_input').eq('category', '생체기록').order('log_date', { ascending: false }).order('log_time', { ascending: false }).limit(1),
-        ]);
-        setLastAlcoholDate(alcRes.data && alcRes.data.length ? alcRes.data[0].log_date : null);
-        setFirstLogDate(firstRes.data && firstRes.data.length ? firstRes.data[0].log_date : null);
+        const bioRes = await sb.from('logs').select('log_date, raw_input').eq('category', '생체기록').order('log_date', { ascending: false }).order('log_time', { ascending: false }).limit(1);
         if (bioRes.data && bioRes.data.length) {
           const raw = bioRes.data[0].raw_input || {};
           setLatestBiometrics({ date: bioRes.data[0].log_date, ...(raw.biometrics || {}) });
@@ -415,7 +425,7 @@
       };
 
       useEffect(() => {
-        if (!session) { setLastAlcoholDate(undefined); setFirstLogDate(null); setLatestBiometrics(null); return; }
+        if (!session) { setLatestBiometrics(null); return; }
         fetchGoalStats();
       }, [session]);
 
@@ -530,6 +540,11 @@
         const newUsername = (fd.get('username') || '').trim();
         const newPassword = fd.get('newPassword') || '';
         try {
+          const weeklyAlcoholGoalText = String(fd.get('goalAlcoholFreeWeekly') || '').trim();
+          const weeklyAlcoholGoal = weeklyAlcoholGoalText === '' ? null : Number(weeklyAlcoholGoalText);
+          if (weeklyAlcoholGoal !== null && (!Number.isInteger(weeklyAlcoholGoal) || weeklyAlcoholGoal < 0 || weeklyAlcoholGoal > 7)) {
+            throw new Error('주간 금주 목표는 0~7일의 정수로 입력해주세요.');
+          }
           const { error: pErr } = await sb.from('profiles').update({
             height: fd.get('height') ? Number(fd.get('height')) : null,
             weight: fd.get('weight') ? Number(fd.get('weight')) : null,
@@ -538,7 +553,7 @@
             disease: fd.get('disease') || '',
             ai_mode: fd.get('aiMode') || 'normal',
             goal_exercise_weekly: fd.get('goalExerciseWeekly') ? Number(fd.get('goalExerciseWeekly')) : null,
-            goal_alcohol_free_days: fd.get('goalAlcoholFreeDays') ? Number(fd.get('goalAlcoholFreeDays')) : null,
+            goal_alcohol_free_weekly: weeklyAlcoholGoal,
             goal_weight_kg: fd.get('goalWeightKg') ? Number(fd.get('goalWeightKg')) : null,
             goal_bp_sys_max: fd.get('goalBpSysMax') ? Number(fd.get('goalBpSysMax')) : null,
             goal_bp_dia_max: fd.get('goalBpDiaMax') ? Number(fd.get('goalBpDiaMax')) : null,
@@ -567,7 +582,7 @@
               username: freshProfile.username, height: freshProfile.height, weight: freshProfile.weight, age: freshProfile.age,
               gender: freshProfile.gender, disease: freshProfile.disease || '', aiMode: freshProfile.ai_mode || 'normal',
               isApproved: !!freshProfile.is_approved, isAdmin: !!freshProfile.is_admin,
-              goalExerciseWeekly: freshProfile.goal_exercise_weekly, goalAlcoholFreeDays: freshProfile.goal_alcohol_free_days,
+              goalExerciseWeekly: freshProfile.goal_exercise_weekly, goalAlcoholFreeWeekly: freshProfile.goal_alcohol_free_weekly,
               goalWeightKg: freshProfile.goal_weight_kg, goalBpSysMax: freshProfile.goal_bp_sys_max, goalBpDiaMax: freshProfile.goal_bp_dia_max,
               goalSugarMax: freshProfile.goal_sugar_max
             });
@@ -856,6 +871,7 @@
               if (finalCategory !== '운동' && finalCategory !== '생체기록') fetchFrequentFoods();
               fetchGoalStats();
             }
+            if (activeTab === 'stats') await fetchPeriodLogs(activeRange.start, activeRange.end);
           } catch (err) {
             clearTimeout(timeoutId);
             if (err.name === 'AbortError') return; // 사용자가 취소했거나 위 안전장치로 중단된 경우 — 상태는 이미 정리됨
@@ -1081,15 +1097,10 @@
         : periodGrades.map(g => g.report_date);
       const gradeRank = { A: 5, B: 4, C: 3, D: 2, F: 1 };
 
-      // ★ 목표 달성 현황: 연속 금주일수 (마지막 음주일 다음날부터 오늘까지 일수, 음주 기록이 아예 없으면 첫 기록일부터 계산)
-      const alcoholFreeStreak = (() => {
-        if (lastAlcoholDate === undefined) return null; // 아직 로딩 전
-        const refDate = lastAlcoholDate || firstLogDate;
-        if (!refDate) return null; // 기록 자체가 없음
-        const todayStr = formatDate(new Date());
-        const diffDays = Math.round((parseDate(todayStr) - parseDate(refDate)) / 86400000);
-        return lastAlcoholDate ? diffDays : diffDays + 1;
-      })();
+      const alcoholGoal = getAlcoholGoalProgress(
+        activeRange.start, activeRange.end, formatDate(new Date()),
+        periodLogs, profile?.goalAlcoholFreeWeekly, statsMode === 'month'
+      );
 
       const exerciseDaysThisPeriod = new Set(periodLogs.filter(l => l.category === '운동').map(l => l.date)).size;
       // 월간 모드에서는 "주당 목표"를 그 달의 주 수만큼 환산해서 비교 (예: 주 3회 목표 → 31일이면 약 13회)
@@ -1100,7 +1111,7 @@
         ? (statsMode === 'week' ? profile.goalExerciseWeekly : Math.round(profile.goalExerciseWeekly * (periodDaysCount / 7)))
         : 0;
 
-      const hasAnyGoal = !!(profile?.goalExerciseWeekly || profile?.goalAlcoholFreeDays || profile?.goalWeightKg || profile?.goalBpSysMax || profile?.goalBpDiaMax || profile?.goalSugarMax);
+      const hasAnyGoal = !!(profile?.goalExerciseWeekly || profile?.goalAlcoholFreeWeekly || profile?.goalWeightKg || profile?.goalBpSysMax || profile?.goalBpDiaMax || profile?.goalSugarMax);
 
       // ★ 로그인 / 회원가입 화면 (기존 최초 온보딩 폼 대체)
       const AuthForm = () => (
@@ -1191,8 +1202,8 @@
                   <input type="number" min="0" name="goalExerciseWeekly" defaultValue={profile?.goalExerciseWeekly || ''} placeholder="예: 3" className="w-full border p-3 rounded-xl bg-gray-50 outline-none text-sm" />
                 </div>
                 <div>
-                  <label className="text-xs font-medium text-gray-500 block mb-1">연속 금주 목표(일)</label>
-                  <input type="number" min="0" name="goalAlcoholFreeDays" defaultValue={profile?.goalAlcoholFreeDays || ''} placeholder="예: 30" className="w-full border p-3 rounded-xl bg-gray-50 outline-none text-sm" />
+                  <label className="text-xs font-medium text-gray-500 block mb-1">주간 금주 목표(일)</label>
+                  <input type="number" min="0" max="7" step="1" name="goalAlcoholFreeWeekly" defaultValue={profile?.goalAlcoholFreeWeekly ?? ''} placeholder="예: 4" className="w-full border p-3 rounded-xl bg-gray-50 outline-none text-sm" />
                 </div>
                 <div className="col-span-2">
                   <label className="text-xs font-medium text-gray-500 block mb-1">목표 체중(kg)</label>
@@ -1527,15 +1538,16 @@
                           </div>
                         </div>
                       )}
-                      {profile.goalAlcoholFreeDays > 0 && (
+                      {profile.goalAlcoholFreeWeekly > 0 && (
                         <div>
                           <div className="flex justify-between text-xs font-bold text-gray-600 mb-1.5">
-                            <span>🍺 연속 금주</span>
-                            <span>{alcoholFreeStreak !== null ? alcoholFreeStreak : '-'} / {profile.goalAlcoholFreeDays}일</span>
+                            <span>🍺 {statsMode === 'month' ? '선택한 달' : '선택한 주'} 금주</span>
+                            <span>{isFetching ? '-' : alcoholGoal.alcoholFree} / {alcoholGoal.target}일{statsMode === 'month' ? ' (주 목표 환산)' : ''}</span>
                           </div>
                           <div className="w-full h-2.5 bg-gray-100 rounded-full overflow-hidden">
-                            <div className="h-full bg-orange-500 rounded-full" style={{width: `${alcoholFreeStreak !== null ? Math.min(100, (alcoholFreeStreak / profile.goalAlcoholFreeDays) * 100) : 0}%`}}></div>
+                            <div className="h-full bg-orange-500 rounded-full" style={{width: `${!isFetching && alcoholGoal.target > 0 ? Math.min(100, (alcoholGoal.alcoholFree / alcoholGoal.target) * 100) : 0}%`}}></div>
                           </div>
+                          <p className="text-[11px] text-gray-400 mt-1.5">오늘까지 음주 기록이 없는 날을 금주로 계산합니다.</p>
                         </div>
                       )}
                       {profile.goalWeightKg > 0 && (
