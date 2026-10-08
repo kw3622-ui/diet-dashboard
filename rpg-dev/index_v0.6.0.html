@@ -1,0 +1,533 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+  <title>건강 수호자 RPG · 개발판 v0.6.0</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    :root { color-scheme: light; --ink:#15223b; --muted:#667085; --line:#dbe4f0; --blue:#356cf6; --panel:#fff; }
+    * { box-sizing:border-box; }
+    html,body { margin:0; min-height:100%; background:#eef3fa; color:var(--ink); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; word-break:keep-all; overflow-wrap:break-word; }
+    button,input { font:inherit; }
+    button { cursor:pointer; }
+    .shell { width:min(100%,720px); margin:0 auto; min-height:100vh; background:linear-gradient(#edf5ff,#f5f7fb 420px); padding:18px 14px 48px; }
+    .topbar { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:14px; }
+    .eyebrow { margin:0 0 3px; color:#356cf6; font-size:12px; font-weight:900; letter-spacing:.05em; }
+    h1 { margin:0; font-size:24px; line-height:1.18; }
+    .version { flex:none; padding:7px 9px; border:1px solid #bed1ff; border-radius:999px; color:#2455cf; background:#eef4ff; font-size:11px; font-weight:900; }
+    .notice { margin:0 0 14px; padding:11px 12px; border:1px solid #f1d68c; border-radius:13px; background:#fff8dd; color:#6f5300; font-size:12px; line-height:1.55; }
+    .card { background:rgba(255,255,255,.96); border:1px solid var(--line); border-radius:20px; box-shadow:0 8px 24px rgba(29,56,96,.08); }
+    .auth { padding:20px; }
+    .auth h2 { margin:0 0 7px; font-size:20px; }
+    .auth p { color:var(--muted); font-size:13px; line-height:1.55; }
+    .field { width:100%; margin-top:10px; padding:13px 14px; border:1px solid #cad5e5; border-radius:12px; background:white; color:var(--ink); outline:none; }
+    .field:focus { border-color:#6f96ff; box-shadow:0 0 0 3px #dfe9ff; }
+    .primary,.secondary,.ghost { border:0; border-radius:12px; padding:12px 14px; font-weight:900; }
+    .primary { width:100%; margin-top:12px; background:#356cf6; color:white; }
+    .secondary { width:100%; margin-top:9px; background:#edf2fb; color:#32415c; }
+    .ghost { padding:8px 10px; background:#edf2fb; color:#526079; font-size:12px; }
+    .error { min-height:20px; margin:10px 0 0; color:#c43131; font-size:12px; font-weight:700; }
+    .hidden { display:none !important; }
+    .dashboard { display:grid; gap:14px; }
+    .hero { overflow:hidden; }
+    .hero-head { display:flex; justify-content:space-between; gap:12px; padding:15px 15px 10px; }
+    .hero-head h2 { margin:0; font-size:18px; }
+    .hero-head p { margin:4px 0 0; color:var(--muted); font-size:12px; }
+    .gender-switch { display:flex; align-self:flex-start; padding:3px; border-radius:11px; background:#eef2f8; }
+    .gender-switch button { border:0; border-radius:9px; padding:7px 9px; background:transparent; color:#69758a; font-size:12px; font-weight:900; white-space:nowrap; }
+    .gender-switch button.active { background:white; color:#2455cf; box-shadow:0 2px 8px rgba(35,60,100,.12); }
+    .stage { position:relative; height:auto; aspect-ratio:16/10; margin:0 10px 10px; overflow:hidden; border:3px solid #20304c; border-radius:14px; background:linear-gradient(#7fcbed 0 54%,#9bc96a 54% 74%,#657447 74%); image-rendering:pixelated; image-rendering:crisp-edges; isolation:isolate; }
+    .stage::before { content:""; position:absolute; z-index:0; inset:auto 0 0; height:25%; background:repeating-linear-gradient(90deg,#6f6752 0 16px,#7c725a 16px 32px); opacity:.72; }
+    .pixel-art { position:absolute; display:block; object-fit:contain; image-rendering:pixelated; image-rendering:crisp-edges; pointer-events:none; }
+    .scene-monster { z-index:1; right:3%; bottom:17%; width:46%; height:76%; object-position:right bottom; filter:drop-shadow(0 4px 0 rgba(21,34,59,.25)); }
+    .character-rig { position:absolute; z-index:3; left:50%; bottom:4%; width:58%; aspect-ratio:1; transform:translateX(-50%); filter:drop-shadow(0 4px 0 rgba(21,34,59,.28)); }
+    .character-layer { inset:0; width:100%; height:100%; }
+    .stage.growth-1 .character-rig { filter:saturate(.78) brightness(.94) drop-shadow(0 4px 0 rgba(21,34,59,.22)); }
+    .stage.growth-4 .character-rig,.stage.growth-5 .character-rig { filter:saturate(1.08) drop-shadow(0 0 6px rgba(255,221,83,.82)); }
+    .scene-level { position:absolute; z-index:6; bottom:8px; padding:5px 7px; border:1px solid rgba(23,38,64,.25); border-radius:8px; background:rgba(255,255,255,.9); color:#17233d; font-size:10px; font-weight:900; white-space:nowrap; }
+    .scene-level.weapon { left:9px; }
+    .scene-level.monster { right:9px; color:#9d351f; background:rgba(255,240,234,.92); }
+    .stage-labels { position:absolute; inset:9px 10px auto; display:flex; justify-content:space-between; pointer-events:none; }
+    .fighter-label { max-width:46%; padding:5px 7px; border:1px solid rgba(23,38,64,.24); border-radius:8px; background:rgba(255,255,255,.86); color:#17233d; font-size:10px; font-weight:900; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .preview-controls { display:grid; grid-template-columns:1fr 1fr; align-items:center; gap:7px; margin:0 14px 10px; }
+    .preview-controls button { border:1px solid #d4deed; border-radius:10px; min-height:38px; background:#f6f8fc; color:#40506b; font-weight:900; }
+    .preview-status { grid-column:1/-1; min-width:0; text-align:center; }
+    .preview-status b,.preview-status small { display:block; }
+    .preview-status b { font-size:12px; }
+    .preview-status small { margin-top:2px; color:#6b778d; font-size:10px; }
+    .preview-reset { display:block; width:calc(100% - 28px); margin:0 14px 12px; border:0; border-radius:10px; padding:8px; background:#edf2fb; color:#40506b; font-size:11px; font-weight:900; }
+    .battle-note { margin:0 14px 14px; padding:9px 10px; border-radius:11px; background:#f1f5fb; color:#40506b; font-size:12px; line-height:1.45; }
+    .hp-row { display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:8px; padding:0 15px 15px; font-size:12px; font-weight:900; }
+    .bar { height:11px; overflow:hidden; border-radius:999px; background:#e5eaf2; }
+    .bar > i { display:block; height:100%; border-radius:inherit; background:linear-gradient(90deg,#ef4d55,#ffb13b,#43c56c); transition:width .35s ease; }
+    .section { padding:16px; }
+    .section h3 { margin:0 0 12px; font-size:16px; }
+    .stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+    .stat { min-width:0; padding:11px 7px; border:1px solid #e0e7f1; border-radius:13px; background:#f8faff; text-align:center; }
+    .stat b { display:block; font-size:18px; line-height:1.1; }
+    .stat span { display:block; margin-top:4px; color:#6a768b; font-size:10px; line-height:1.25; }
+    .momentum-grid { display:grid; grid-template-columns:1fr 1fr; gap:9px; }
+    .momentum { padding:12px; border-radius:14px; border:1px solid; }
+    .momentum.good { background:#edfff4; border-color:#bdeacd; color:#126735; }
+    .momentum.warn { background:#fff4ef; border-color:#f6cbbd; color:#9b351d; }
+    .momentum strong { display:block; font-size:20px; }
+    .momentum span { display:block; margin-top:3px; font-size:11px; line-height:1.35; }
+    .equipment { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }
+    .gear { min-width:0; display:flex; align-items:center; gap:9px; padding:11px; border:1px solid #dfe6f0; border-radius:14px; background:#fbfcff; }
+    .gear.weapon { grid-column:1/-1; border-color:#c9d8ff; background:#f4f7ff; }
+    .gear-icon { display:grid; place-items:center; width:39px; height:39px; flex:none; border-radius:10px; background:#edf2ff; font-size:22px; }
+    .gear b,.gear small { display:block; }
+    .gear b { font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .gear small { margin-top:3px; color:#6c7890; font-size:10px; }
+    .rank { color:#7b47d1 !important; font-weight:900; }
+    .chips { display:flex; flex-wrap:wrap; gap:7px; }
+    .chip { padding:7px 9px; border-radius:999px; background:#f1f4f9; color:#47566e; font-size:11px; font-weight:800; }
+    .chip.good { background:#e9faef; color:#176d39; }
+    .chip.warn { background:#fff0ea; color:#a13d25; }
+    .rule-note { margin:12px 0 0; color:#6a768b; font-size:11px; line-height:1.55; }
+    .sync-status { display:inline-flex; align-items:center; gap:5px; margin-top:7px !important; padding:5px 7px; border-radius:999px; background:#eef3fb; color:#526079 !important; font-size:10px !important; font-weight:900; }
+    .sync-status.saved { background:#e9faef; color:#176d39 !important; }
+    .sync-status.error { background:#fff0ea; color:#a13d25 !important; }
+    .tag-ready { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px; border:1px solid #dfe6f0; border-radius:14px; background:#f8faff; }
+    .tag-ready strong { font-size:22px; }
+    .tag-ready span { color:#667085; font-size:11px; line-height:1.4; }
+    .footer-actions { display:flex; gap:8px; }
+    .footer-actions button { flex:1; }
+    .loading { padding:32px; text-align:center; color:#56647b; font-weight:800; }
+    @media (max-width:370px) {
+      h1 { font-size:21px; }
+      .stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .equipment { grid-template-columns:1fr; }
+      .hero-head { display:block; }
+      .gender-switch { width:max-content; margin-top:10px; }
+    }
+    @media (max-width:370px) { .character-rig { width:61%; } .scene-monster { right:1%; width:48%; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div><p class="eyebrow">DIET DASHBOARD LAB</p><h1>건강 수호자 RPG</h1></div>
+      <span class="version">개발판 v0.6.0</span>
+    </header>
+    <p class="notice">운영 식단 기록장은 변경하지 않습니다. 이 페이지는 정면 도트 캐릭터와 두 단계 장비·몬스터 조합을 시험하는 시제품입니다.</p>
+
+    <section id="authCard" class="card auth">
+      <h2>기존 계정으로 들어가기</h2>
+      <p>식단 기록장에서 사용하던 계정명과 비밀번호를 입력하면 본인의 최근 기록만 불러옵니다.</p>
+      <form id="loginForm">
+        <input id="username" class="field" autocomplete="username" placeholder="계정명" required>
+        <input id="password" class="field" type="password" autocomplete="current-password" placeholder="비밀번호" required>
+        <button class="primary" type="submit">내 기록으로 시작</button>
+      </form>
+      <button id="demoButton" class="secondary" type="button">체험 데이터로 먼저 보기</button>
+      <p id="authError" class="error" aria-live="polite"></p>
+    </section>
+
+    <section id="loadingCard" class="card loading hidden">기록을 불러와 캐릭터를 준비하고 있습니다…</section>
+
+    <section id="dashboard" class="dashboard hidden">
+      <article class="card hero">
+        <div class="hero-head">
+          <div><h2 id="heroTitle">Lv.1 건강 수호자</h2><p id="heroSub">최근 기록을 바탕으로 계산 중</p><p id="syncStatus" class="sync-status">저장 상태 확인 중</p></div>
+          <div class="gender-switch" aria-label="캐릭터 선택">
+            <button id="maleButton" type="button">남성</button>
+            <button id="femaleButton" type="button">여성</button>
+          </div>
+        </div>
+        <div id="battleStage" class="stage growth-1" aria-label="정면 도트 장비와 몬스터 성장 장면">
+          <img id="monsterSprite" class="pixel-art scene-monster" alt="캐릭터 뒤에서 위협하는 압력 골렘">
+          <div id="characterRig" class="character-rig" aria-label="정면 도트 건강 수호자">
+            <img id="heroSprite" class="pixel-art character-layer" alt="건강 수호자 기본 캐릭터">
+            <img id="armorSprite" class="pixel-art character-layer" alt="현재 장착 갑옷과 방패">
+            <img id="weaponSprite" class="pixel-art character-layer" alt="현재 장착 무기">
+          </div>
+          <div class="stage-labels"><span id="playerLabel" class="fighter-label">건강 수호자</span><span id="monsterLabel" class="fighter-label">몬스터</span></div>
+          <span id="weaponLevelBadge" class="scene-level weapon">무기 Lv.1</span>
+          <span id="monsterLevelBadge" class="scene-level monster">골렘 Lv.1</span>
+        </div>
+        <div class="preview-controls" aria-label="두 단계 시제품 미리보기">
+          <div class="preview-status"><b id="previewTitle">실제 기록 단계</b><small id="previewDetail">기록 단계를 두 가지 시제품으로 변환합니다.</small></div>
+          <button id="previewBasic" type="button">초급 세트</button>
+          <button id="previewLegend" type="button">최상급 세트</button>
+        </div>
+        <button id="previewReset" class="preview-reset hidden" type="button">실제 기록 단계로 돌아가기</button>
+        <p id="battleNote" class="battle-note"></p>
+        <div class="hp-row"><span>❤️ HP</span><span class="bar"><i id="hpBar"></i></span><span id="hpText">0/100</span></div>
+      </article>
+
+      <article class="card section">
+        <h3>이번 주 흐름</h3>
+        <div class="momentum-grid">
+          <div class="momentum good"><strong id="goodFlow">0</strong><span>좋은 습관 흐름<br>3·5·7 단계에서 보너스</span></div>
+          <div class="momentum warn"><strong id="warnFlow">0</strong><span>주의 습관 누적<br>쉬어가면 서서히 감소</span></div>
+        </div>
+        <div id="flowChips" class="chips" style="margin-top:10px"></div>
+      </article>
+
+      <article class="card section">
+        <h3>캐릭터 성장</h3>
+        <div class="stats">
+          <div class="stat"><b id="levelStat">1</b><span>레벨</span></div>
+          <div class="stat"><b id="stageStat">1단계</b><span>건강한 모습</span></div>
+          <div class="stat"><b id="recordStat">0일</b><span>최근 90일 기록</span></div>
+          <div class="stat"><b id="exerciseStat">0회</b><span>운동 기록</span></div>
+          <div class="stat"><b id="sleepStat">0회</b><span>수면 목표</span></div>
+          <div class="stat"><b id="freeStat">0일</b><span>최근 7일 금주</span></div>
+        </div>
+      </article>
+
+      <article class="card section">
+        <h3>착용 장비 · 2단계 시제품</h3>
+        <div id="equipment" class="equipment"></div>
+        <p class="rule-note">장비는 기존 기록으로 임시 계산됩니다. 등급은 유지되는 장기 성장이고, 최근 습관은 HP와 전투 연출에만 반영됩니다.</p>
+      </article>
+
+      <article class="card section">
+        <h3>현재 등장 몬스터</h3>
+        <div id="monsterChips" class="chips"></div>
+        <p id="monsterReason" class="rule-note"></p>
+      </article>
+
+      <article class="card section">
+        <h3>음식별 건강 태그 저장소</h3>
+        <div class="tag-ready"><div><b>저장된 음식 태그</b><span><br>음식 하나마다 질환별 도움·주의 정보를 보관할 준비가 됐습니다.</span></div><strong id="tagCount">0개</strong></div>
+        <p class="rule-note">이번 단계에서는 저장 구조만 연결했습니다. 다음 AI 분석 단계부터 새 식사 기록의 음식별 태그가 여기에 누적됩니다.</p>
+      </article>
+
+      <div class="footer-actions">
+        <button id="refreshButton" class="secondary" type="button">기록 다시 계산</button>
+        <button id="logoutButton" class="secondary" type="button">로그아웃</button>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const SUPABASE_URL='https://nppkwxwzbyhfwsmdudge.supabase.co';
+    const SUPABASE_ANON_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5wcGt3eHd6YnloZndzbWR1ZGdlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgyNTQ4OTYsImV4cCI6MjEwMzgzMDg5Nn0.QhIoiK5G7jC_VU9hrVpXNVw3AD8NdlmVq-1jgkR5kh4';
+    const EMAIL_DOMAIN='@dietapp.local';
+    const sb=supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY);
+    const $=id=>document.getElementById(id);
+    const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
+    const pad=n=>String(n).padStart(2,'0');
+    const dateStr=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+    const addDays=(d,n)=>{const x=new Date(d);x.setDate(x.getDate()+n);return x;};
+    const today=new Date(); today.setHours(12,0,0,0);
+    const keyword=(text,words)=>words.some(w=>text.includes(w));
+    const LEVEL_NAMES=['새싹','회복 중','튼튼한','활기찬','빛나는'];
+    const RANK_NAMES=['평범','튼튼','희귀','영웅','전설'];
+    const WEAPON_NAMES=['금이 간 나무 막대','낡은 목검','보강 목검','무딘 철검','강철 장검','은빛 수호검','푸른 룬검','영웅의 대검','용의 송곳니','전설의 용살검'];
+    const GOLEM_NAMES=['수상한 돌멩이','움직이는 바위','작은 돌 인형','바위 병사','압력 골렘','철갑 골렘','증기 골렘','폭주 골렘','산맥의 거인','압력의 거신'];
+    const MONSTERS={
+      pressure:{name:'압력의 골렘',emoji:'🪨',color:'#8a6752'},
+      sugar:{name:'설탕 슬라임',emoji:'🟣',color:'#ac5cd6'},
+      uric:{name:'요산 결정괴물',emoji:'💎',color:'#4e91d8'},
+      oil:{name:'기름 안개',emoji:'🌫️',color:'#60687b'},
+      sleep:{name:'불면의 유령',emoji:'👻',color:'#7883ba'},
+      alcohol:{name:'술안개 마왕',emoji:'🍶',color:'#a65062'},
+      idle:{name:'게으름 덩굴',emoji:'🌿',color:'#4b9b5e'}
+    };
+    let app={session:null,profile:null,rpgProfile:null,inventory:[],tagCount:0,logs:[],demo:false,gender:'male',game:null,previewLevel:null,saving:false,pendingSave:false};
+
+    function textOf(log){
+      const raw=typeof log.raw_input==='string'?log.raw_input:JSON.stringify(log.raw_input||{});
+      return `${log.food_name||''} ${(log.ingredients||[]).join(' ')} ${log.category||''} ${raw}`.toLowerCase();
+    }
+    function bioOf(log){
+      const raw=typeof log.raw_input==='string'?(()=>{try{return JSON.parse(log.raw_input)}catch{return {}}})():log.raw_input||{};
+      return raw.biometrics||{};
+    }
+    function gearLevel(value,limits){let level=1;limits.forEach((v,i)=>{if(value>=v)level=i+1});return clamp(level,1,5)}
+    function gearLevel10(value,limits){let level=1;limits.forEach((v,i)=>{if(value>=v)level=i+1});return clamp(level,1,10)}
+    function elapsedWeekDates(){
+      const day=today.getDay(); const monday=addDays(today,-((day+6)%7));
+      return Array.from({length:Math.floor((today-monday)/86400000)+1},(_,i)=>dateStr(addDays(monday,i)));
+    }
+    function analyzeGame(profile,logs){
+      const weekDates=elapsedWeekDates();
+      const weekSet=new Set(weekDates);
+      const week=logs.filter(l=>weekSet.has(l.log_date));
+      const allDates=new Set(logs.map(l=>l.log_date));
+      const exercise=logs.filter(l=>l.category==='운동');
+      const weekExercise=new Set(week.filter(l=>l.category==='운동').map(l=>l.log_date)).size;
+      const alcoholWeek=week.filter(l=>l.is_alcohol||keyword(textOf(l),['소주','맥주','막걸리','와인','하이볼','술 ','음주']));
+      const alcoholDates=new Set(alcoholWeek.map(l=>l.log_date));
+      const alcoholFree=weekDates.filter(d=>!alcoholDates.has(d)).length;
+      const sleepGood=logs.filter(l=>{const s=Number(bioOf(l).sleep_hours);return s>=7&&s<=9}).length;
+      const sleepBadWeek=week.filter(l=>{const s=Number(bioOf(l).sleep_hours);return s>0&&s<6}).length;
+      const balancedWords=['채소','샐러드','상추','깻잎','브로콜리','현미','잡곡','두부','생선','과일','견과','콩'];
+      const saltyWords=['라면','찌개','국','탕','햄','소시지','젓갈','짬뽕'];
+      const friedWords=['튀김','치킨','돈까스','감자튀김','패스트푸드'];
+      const recent14=logs.filter(l=>l.log_date>=dateStr(addDays(today,-13)));
+      const balanced=logs.filter(l=>keyword(textOf(l),balancedWords));
+      const weekBalanced=week.filter(l=>keyword(textOf(l),balancedWords)).length;
+      const weekSalty=week.filter(l=>keyword(textOf(l),saltyWords)).length;
+      const weekFried=week.filter(l=>keyword(textOf(l),friedWords)).length;
+      const weekLate=week.filter(l=>String(l.log_time||'').slice(0,2)>='22'&&l.category!=='생체기록').length;
+      const recordDays=allDates.size;
+      const growthPoints=recordDays+exercise.length*2+sleepGood+balanced.length;
+      const weaponLevel=gearLevel10(growthPoints,[0,8,18,32,50,72,98,130,166,210]);
+      const recent14Alcohol=recent14.filter(l=>l.is_alcohol||keyword(textOf(l),['소주','맥주','막걸리','와인','하이볼','술 ','음주'])).length;
+      const recent14Salty=recent14.filter(l=>keyword(textOf(l),saltyWords)).length;
+      const recent14Fried=recent14.filter(l=>keyword(textOf(l),friedWords)).length;
+      const recent14Late=recent14.filter(l=>String(l.log_time||'').slice(0,2)>='22'&&l.category!=='생체기록').length;
+      const recent14SleepBad=recent14.filter(l=>{const s=Number(bioOf(l).sleep_hours);return s>0&&s<6}).length;
+      const recent14Exercise=new Set(recent14.filter(l=>l.category==='운동').map(l=>l.log_date)).size;
+      const threatPoints=recent14Alcohol*2+recent14Salty+recent14Fried+recent14Late+recent14SleepBad+(recent14Exercise<2?2:0);
+      const monsterLevel=clamp(1+Math.floor(threatPoints/2),1,10);
+      const stage=growthPoints>=120?5:growthPoints>=70?4:growthPoints>=35?3:growthPoints>=14?2:1;
+      const level=clamp(1+Math.floor(growthPoints/10),1,30);
+      const goodRaw=weekExercise*2+weekBalanced+sleepGood+alcoholFree;
+      const warnRaw=alcoholWeek.length*2+weekSalty+weekFried+weekLate+sleepBadWeek;
+      const goodFlow=clamp(Math.round(goodRaw/2),0,7);
+      const warnFlow=clamp(warnRaw,0,7);
+      const hp=clamp(62+goodFlow*5-warnFlow*6,5,100);
+      const disease=String(profile.disease||'');
+      const roster=[];
+      if(keyword(disease,['고혈압','혈압']))roster.push('pressure');
+      if(keyword(disease,['당뇨','혈당']))roster.push('sugar');
+      if(disease.includes('통풍'))roster.push('uric');
+      if(keyword(disease,['고지혈증','콜레스테롤','지질']))roster.push('oil');
+      if(!roster.length){
+        if(alcoholWeek.length)roster.push('alcohol');
+        if(sleepBadWeek)roster.push('sleep');
+        if(!weekExercise)roster.push('idle');
+      }
+      if(!roster.length)roster.push('idle');
+      const monsterKey=roster[0];
+      const condition=hp>=80?'활력이 넘쳐요':hp>=55?'안정적으로 성장 중':hp>=30?'조금 지쳐 있어요':hp>5?'주저앉아 회복 중':'회복 공간에서 쉬는 중';
+      return {level,stage,hp,condition,goodFlow,warnFlow,recordDays,exerciseCount:exercise.length,sleepGood,sleepBadWeek,alcoholFree,weekExercise,weekBalanced,weekSalty,weekFried,weekLate,alcoholCount:alcoholWeek.length,roster,monsterKey,growthPoints,weaponLevel,monsterLevel,threatPoints,
+        gear:{
+          weapon:weaponLevel,
+          head:gearLevel(recordDays,[0,7,21,45,75]),
+          armor:gearLevel(balanced.length,[0,3,10,22,40]),
+          cloak:gearLevel(sleepGood,[0,2,7,16,30]),
+          shield:gearLevel(Math.max(0,28-alcoholDates.size),[0,7,14,21,27]),
+          shoes:gearLevel(exercise.length,[0,3,10,20,35])
+        }};
+    }
+
+    function demoData(){
+      const dates=Array.from({length:24},(_,i)=>dateStr(addDays(today,-i)));
+      const logs=[];
+      dates.forEach((d,i)=>{
+        logs.push({log_date:d,log_time:'12:20',category:'점심',food_name:i%3===0?'현미밥, 두부, 상추':'일반 식사',ingredients:i%3===0?['현미','두부','상추']:[],raw_input:{},is_alcohol:false});
+        if(i%2===0)logs.push({log_date:d,log_time:'19:00',category:'운동',food_name:'걷기 30분',ingredients:[],raw_input:{},is_alcohol:false});
+        if(i%4===0)logs.push({log_date:d,log_time:'07:00',category:'생체기록',food_name:'수면 기록',ingredients:[],raw_input:{biometrics:{sleep_hours:7.5}},is_alcohol:false});
+      });
+      logs.push({log_date:dateStr(today),log_time:'20:30',category:'저녁',food_name:'소주 1병',ingredients:['소주'],raw_input:{},is_alcohol:true});
+      return {profile:{username:'체험 사용자',gender:'male',disease:'고혈압, 통풍'},logs};
+    }
+
+    async function loadRealData(){
+      const {data:{session}}=await sb.auth.getSession();
+      if(!session)throw new Error('로그인이 필요합니다.');
+      app.session=session;
+      const since=dateStr(addDays(today,-89));
+      const [p,l,rpg,inventory,tags]=await Promise.all([
+        sb.from('profiles').select('*').eq('id',session.user.id).single(),
+        sb.from('logs').select('id,log_date,log_time,category,food_name,ingredients,raw_input,is_alcohol').gte('log_date',since).order('log_date',{ascending:true}),
+        sb.from('rpg_profiles').select('*').eq('user_id',session.user.id).maybeSingle(),
+        sb.from('rpg_inventory').select('*').order('item_key',{ascending:true}),
+        sb.from('food_health_tags').select('id',{count:'exact',head:true})
+      ]);
+      if(p.error)throw p.error;
+      if(l.error)throw l.error;
+      if(rpg.error)throw rpg.error;
+      if(inventory.error)throw inventory.error;
+      if(tags.error)throw tags.error;
+      if(!p.data.is_approved)throw new Error('관리자 승인 후 사용할 수 있습니다.');
+      app.profile=p.data; app.logs=l.data||[]; app.rpgProfile=rpg.data||null; app.inventory=inventory.data||[]; app.tagCount=tags.count||0; app.demo=false;
+      const stored=localStorage.getItem(`rpg-gender:${session.user.id}`);
+      app.gender=rpg.data?.character_gender||stored||(String(p.data.gender||'').includes('여')?'female':'male');
+    }
+
+    function gearName(type,level){
+      const names={
+        weapon:WEAPON_NAMES,
+        head:['기록 머리띠','꾸준함 두건','기록 수호모','성실의 왕관','시간의 왕관'],
+        armor:['수련복','균형 식단복','생명의 갑옷','수호자의 갑옷','풍요의 성갑'],
+        cloak:['얇은 담요','포근한 망토','숙면 망토','별빛 숙면 망토','꿈의 수호 망토'],
+        shield:['나무 방패','철제 절주 방패','은빛 절주 방패','맑은 정신 방패','전설의 절주 방패'],
+        shoes:['낡은 운동화','튼튼한 운동화','바람의 러닝화','빛나는 질주화','전설의 활력 장화']
+      }; return names[type][level-1];
+    }
+    function render(){
+      const g=analyzeGame(app.profile,app.logs); app.game=g;
+      $('heroTitle').textContent=`Lv.${g.level} ${LEVEL_NAMES[g.stage-1]} 건강 수호자`;
+      $('heroSub').textContent=`${g.condition} · 성장 점수 ${g.growthPoints}`;
+      $('playerLabel').textContent=app.profile.username||'건강 수호자';
+      $('monsterLabel').textContent=GOLEM_NAMES[g.monsterLevel-1];
+      $('battleNote').textContent=`누적된 좋은 습관은 ${WEAPON_NAMES[g.weaponLevel-1]}을 성장시키고, 최근 14일의 주의 습관은 ${GOLEM_NAMES[g.monsterLevel-1]}의 단계에 반영됩니다.`;
+      $('hpBar').style.width=`${g.hp}%`; $('hpText').textContent=`${g.hp}/100`;
+      $('goodFlow').textContent=g.goodFlow; $('warnFlow').textContent=g.warnFlow;
+      $('levelStat').textContent=g.level; $('stageStat').textContent=`${g.stage}단계`;
+      $('recordStat').textContent=`${g.recordDays}일`; $('exerciseStat').textContent=`${g.exerciseCount}회`;
+      $('sleepStat').textContent=`${g.sleepGood}회`; $('freeStat').textContent=`${g.alcoholFree}일`;
+      const flow=[
+        [`운동 ${g.weekExercise}일`,'good'],[`균형 식사 단서 ${g.weekBalanced}회`,'good'],[`음주 ${g.alcoholCount}회`,g.alcoholCount?'warn':'good'],
+        [`나트륨 주의 단서 ${g.weekSalty}회`,g.weekSalty?'warn':'good'],[`야식 단서 ${g.weekLate}회`,g.weekLate?'warn':'good']
+      ];
+      $('flowChips').innerHTML=flow.map(([t,c])=>`<span class="chip ${c}">${t}</span>`).join('');
+      const gear=[['weapon','⚔️'],['head','👑'],['armor','🥋'],['cloak','🧥'],['shield','🛡️'],['shoes','👟']];
+      $('equipment').innerHTML=gear.map(([type,icon])=>{const lv=g.gear[type];const detail=type==='weapon'?`Lv.${lv} / 10`:`${RANK_NAMES[lv-1]} · ${lv}단계`;return `<div class="gear ${type}"><span class="gear-icon">${icon}</span><div><b>${gearName(type,lv)}</b><small class="rank">${detail}</small></div></div>`}).join('');
+      $('monsterChips').innerHTML=g.roster.map(k=>`<span class="chip warn">${MONSTERS[k].emoji} ${MONSTERS[k].name}</span>`).join('');
+      $('monsterReason').textContent=app.profile.disease?`회원정보의 기저질환(${app.profile.disease})과 최근 습관을 기준으로 등장했습니다.`:'등록된 기저질환이 없어 최근 생활 기록을 기준으로 등장했습니다.';
+      $('tagCount').textContent=`${app.tagCount}개`;
+      $('maleButton').classList.toggle('active',app.gender==='male'); $('femaleButton').classList.toggle('active',app.gender==='female');
+      $('battleStage').className=`stage growth-${g.stage}`;
+      renderScene();
+    }
+
+    function renderScene(){
+      const g=app.game;if(!g)return;
+      const weaponLevel=app.previewLevel??g.weaponLevel;
+      const monsterLevel=app.previewLevel??g.monsterLevel;
+      const gearTier=weaponLevel<=5?'basic':'legend';
+      const monsterTier=monsterLevel<=5?'basic':'legend';
+      $('heroSprite').src=`./assets/pixel-hero-${app.gender}_v0.6.0.svg`;
+      $('armorSprite').src=`./assets/pixel-armor-${gearTier}_v0.6.0.svg`;
+      $('weaponSprite').src=`./assets/pixel-weapon-${gearTier}_v0.6.0.svg`;
+      $('monsterSprite').src=`./assets/pixel-golem-${monsterTier}_v0.6.0.svg`;
+      $('weaponLevelBadge').textContent=gearTier==='basic'?'초급 장비':'최상급 장비';
+      $('monsterLevelBadge').textContent=monsterTier==='basic'?'작은 돌멩이':'거대 골렘';
+      $('monsterLabel').textContent=monsterTier==='basic'?'수상한 돌멩이':'압력의 거신';
+      $('previewTitle').textContent=app.previewLevel?(gearTier==='basic'?'초급 세트 미리보기':'최상급 세트 미리보기'):'실제 기록 단계';
+      $('previewDetail').textContent=app.previewLevel?(gearTier==='basic'?'목검 · 천 갑옷 · 작은 돌멩이':'용살검 · 황금 갑옷 · 거대 골렘'):`무기 Lv.${g.weaponLevel} · 골렘 Lv.${g.monsterLevel}을 2단계 시제품으로 표시`;
+      $('previewReset').classList.toggle('hidden',app.previewLevel===null);
+    }
+
+    function setSyncStatus(text,state=''){
+      const el=$('syncStatus'); el.textContent=text; el.className=`sync-status ${state}`.trim();
+    }
+    async function persistRpgState(){
+      if(app.demo||!app.session||!app.game){setSyncStatus(app.demo?'체험 모드 · 저장하지 않음':'저장 대기 중');return}
+      if(app.saving){app.pendingSave=true;setSyncStatus('변경사항 저장 대기 중…');return}
+      app.saving=true; setSyncStatus('RPG 상태 저장 중…');
+      const g=app.game,userId=app.session.user.id,now=new Date().toISOString();
+      const snapshot={as_of:dateStr(today),record_days:g.recordDays,exercise_count:g.exerciseCount,sleep_goal_count:g.sleepGood,alcohol_free_days:g.alcoholFree,monster_key:g.monsterKey,gear:g.gear};
+      const durability={weapon:100,head:100,armor:clamp(100-(g.weekSalty+g.weekFried)*4,0,100),cloak:clamp(100-g.sleepBadWeek*8,0,100),shield:clamp(100-g.alcoholCount*8,0,100),shoes:g.weekExercise?100:92};
+      const profileRow={user_id:userId,character_gender:app.gender,level:g.level,xp:g.growthPoints,hp:g.hp,growth_stage:g.stage,good_momentum:g.goodFlow,caution_momentum:g.warnFlow,rules_version:'rpg-v0.6.0',last_snapshot:snapshot,updated_at:now};
+      const itemRows=Object.entries(g.gear).map(([item_key,item_level])=>({user_id:userId,item_key,item_level,durability:durability[item_key],equipped:true,updated_at:now}));
+      try{
+        const [profileResult,itemResult]=await Promise.all([
+          sb.from('rpg_profiles').upsert(profileRow,{onConflict:'user_id'}).select().single(),
+          sb.from('rpg_inventory').upsert(itemRows,{onConflict:'user_id,item_key'}).select()
+        ]);
+        if(profileResult.error)throw profileResult.error;
+        if(itemResult.error)throw itemResult.error;
+        app.rpgProfile=profileResult.data; app.inventory=itemResult.data||[];
+        setSyncStatus('RPG 상태 저장됨','saved');
+      }catch(error){console.error(error);setSyncStatus('저장 실패 · 다시 계산을 눌러주세요','error')}
+      finally{app.saving=false;if(app.pendingSave){app.pendingSave=false;persistRpgState()}}
+    }
+
+    function px(ctx,x,y,w,h,color){ctx.fillStyle=color;ctx.fillRect(Math.round(x),Math.round(y),Math.round(w),Math.round(h))}
+    function drawMonster(ctx,x,y,key,bob,hit){
+      const c=MONSTERS[key].color; ctx.save(); ctx.translate(Math.round(x),Math.round(y+bob));
+      if(hit){ctx.globalAlpha=.55;ctx.translate(-2,0)}
+      if(key==='pressure'){
+        px(ctx,-14,-25,28,22,c);px(ctx,-18,-18,6,17,c);px(ctx,12,-18,6,17,c);px(ctx,-10,-31,8,8,'#695044');px(ctx,2,-31,8,8,'#695044');
+      }else if(key==='sugar'){
+        px(ctx,-16,-17,32,15,c);px(ctx,-12,-24,24,8,c);px(ctx,-7,-29,14,6,c);
+      }else if(key==='uric'){
+        px(ctx,-8,-29,16,30,c);px(ctx,-17,-18,34,10,c);px(ctx,-12,-25,8,8,'#8fd4ff');px(ctx,5,-20,9,11,'#8fd4ff');
+      }else if(key==='oil'){
+        px(ctx,-18,-22,36,18,c);px(ctx,-12,-29,24,8,c);px(ctx,-22,-13,44,8,'#737c91');
+      }else if(key==='sleep'){
+        px(ctx,-14,-28,28,22,c);px(ctx,-14,-8,8,10,c);px(ctx,-2,-8,8,10,c);px(ctx,10,-8,4,10,c);
+      }else if(key==='alcohol'){
+        px(ctx,-13,-28,26,27,c);px(ctx,-8,-34,16,7,'#e3e7ef');px(ctx,-16,-13,32,12,'#893e50');
+      }else{
+        px(ctx,-16,-17,32,15,c);px(ctx,-4,-33,8,19,c);px(ctx,-14,-28,12,6,'#76c885');px(ctx,3,-25,13,6,'#76c885');
+      }
+      px(ctx,-8,-17,4,4,'#fff');px(ctx,5,-17,4,4,'#fff');px(ctx,-7,-16,2,2,'#20283c');px(ctx,6,-16,2,2,'#20283c');
+      ctx.restore();
+    }
+    function drawHero(ctx,x,y,g,gender,bob,attacking,hit){
+      const stage=g.stage,skin='#f0b68e',hair=gender==='female'?'#5a3428':'#303748';
+      ctx.save();ctx.translate(Math.round(x+(hit?2:0)),Math.round(y+bob));
+      if(g.hp<30)ctx.rotate(.08);
+      const cloak=['#9aa2af','#5d83b8','#7758b7','#7b55d9','#f2c94c'][g.gear.cloak-1];
+      const armor=['#9ca3af','#4f83c2','#6a53be','#9d55ce','#f0b62c'][g.gear.armor-1];
+      const shield=['#9a7652','#78818e','#b8c0cc','#68a7da','#f4cf4d'][g.gear.shield-1];
+      const shoe=['#6b7280','#445d7b','#3c79bc','#5d59dd','#f0b62c'][g.gear.shoes-1];
+      px(ctx,-10,-27,7,25,cloak);
+      px(ctx,-8,-42,16,15,skin);
+      if(gender==='female'){px(ctx,-10,-45,20,7,hair);px(ctx,-11,-40,5,17,hair);px(ctx,7,-40,5,17,hair)}else{px(ctx,-9,-45,18,7,hair);px(ctx,-10,-41,5,6,hair)}
+      px(ctx,-5,-37,3,3,'#263247');px(ctx,3,-37,3,3,'#263247');
+      if(g.hp>=30)px(ctx,-3,-31,7,2,'#9c5149'); else px(ctx,-3,-30,7,2,'#9c5149');
+      px(ctx,-10,-27,20,20,armor);px(ctx,-7,-24,14,3,'rgba(255,255,255,.35)');
+      const armX=attacking?-17:-13;px(ctx,armX,-25,6,16,skin);px(ctx,8,-25,6,16,skin);
+      px(ctx,8,-25,13,20,shield);px(ctx,11,-22,7,13,'rgba(255,255,255,.25)');
+      px(ctx,-8,-7,7,10,'#31435f');px(ctx,2,-7,7,10,'#31435f');px(ctx,-10,2,10,5,shoe);px(ctx,1,2,10,5,shoe);
+      if(g.gear.head>=2)px(ctx,-8,-49,16,4,g.gear.head>=5?'#f4cf4d':'#6888d4');
+      if(g.gear.head>=4){px(ctx,-8,-53,4,5,'#f4cf4d');px(ctx,-2,-55,4,7,'#f4cf4d');px(ctx,4,-53,4,5,'#f4cf4d')}
+      if(stage>=4){px(ctx,-14,-29,4,18,armor);px(ctx,10,-29,4,18,armor)}
+      ctx.restore();
+    }
+    function startCanvas(){
+      cancelAnimationFrame(app.raf); const canvas=$('gameCanvas'),ctx=canvas.getContext('2d');ctx.imageSmoothingEnabled=false;
+      const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+      function frame(ms){
+        const g=app.game;if(!g)return;
+        const cycle=reduce?0:ms%5600;const heroWins=g.goodFlow>=g.warnFlow;
+        const attack=cycle>1350&&cycle<2250;const strike=cycle>1740&&cycle<2260;
+        ctx.clearRect(0,0,320,160);
+        const sprite=$('heroSprite');
+        const monsterSprite=$('monsterSprite');
+        const action=attack&&heroWins?'attack':strike&&!heroWins?'hurt':g.hp<30?'rest':g.goodFlow===7&&g.warnFlow===0&&cycle>2850?'victory':'idle';
+        if(sprite.dataset.action!==action){
+          sprite.dataset.action=action;
+          sprite.style.backgroundImage=`url('./assets/guardian-${app.gender}-${action}_v0.4.0.png')`;
+        }
+        monsterSprite.classList.toggle('hit',strike&&heroWins);
+        monsterSprite.classList.toggle('attacking',attack&&!heroWins);
+        $('hitFace').classList.toggle('show',strike&&heroWins);
+        if(strike&&heroWins){
+          const flicker=Math.floor(cycle/90)%2;
+          ctx.strokeStyle=flicker?'#fff7ad':'#ffffff';ctx.lineWidth=5;ctx.lineCap='square';
+          ctx.beginPath();ctx.moveTo(167,63);ctx.lineTo(200,96);ctx.stroke();
+          ctx.strokeStyle='#ffcf3c';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(173,59);ctx.lineTo(205,91);ctx.stroke();
+          ctx.fillStyle='#fff7ad';ctx.fillRect(215,58,5,5);ctx.fillRect(223,68,3,3);ctx.fillRect(211,79,4,4);
+        }else if(strike){
+          ctx.fillStyle='rgba(237,76,88,.15)';ctx.fillRect(0,0,320,160);
+        }
+        app.raf=requestAnimationFrame(frame);
+      }
+      app.raf=requestAnimationFrame(frame);
+    }
+
+    function showDashboard(){
+      $('authCard').classList.add('hidden');$('loadingCard').classList.add('hidden');$('dashboard').classList.remove('hidden');render();persistRpgState();
+    }
+    async function refresh(){
+      app.previewLevel=null;
+      $('dashboard').classList.add('hidden');$('loadingCard').classList.remove('hidden');
+      try{if(app.demo){const d=demoData();app.profile=d.profile;app.logs=d.logs}else await loadRealData();showDashboard()}
+      catch(e){$('loadingCard').classList.add('hidden');$('authCard').classList.remove('hidden');$('authError').textContent=e.message||'기록을 불러오지 못했습니다.'}
+    }
+    $('loginForm').addEventListener('submit',async e=>{
+      e.preventDefault();$('authError').textContent='';const button=e.submitter;button.disabled=true;button.textContent='로그인 중…';
+      try{
+        const username=$('username').value.trim(),password=$('password').value;
+        const {error}=await sb.auth.signInWithPassword({email:username+EMAIL_DOMAIN,password});if(error)throw error;
+        await refresh();
+      }catch(err){$('authError').textContent=err.message==='Invalid login credentials'?'계정명 또는 비밀번호를 확인해주세요.':err.message}
+      finally{button.disabled=false;button.textContent='내 기록으로 시작'}
+    });
+    $('demoButton').addEventListener('click',()=>{const d=demoData();app.profile=d.profile;app.logs=d.logs;app.demo=true;app.gender='male';app.previewLevel=null;showDashboard()});
+    $('maleButton').addEventListener('click',()=>setGender('male'));
+    $('femaleButton').addEventListener('click',()=>setGender('female'));
+    function setGender(g){app.gender=g;if(app.session)localStorage.setItem(`rpg-gender:${app.session.user.id}`,g);render();persistRpgState()}
+    $('previewBasic').addEventListener('click',()=>{app.previewLevel=1;renderScene()});
+    $('previewLegend').addEventListener('click',()=>{app.previewLevel=10;renderScene()});
+    $('previewReset').addEventListener('click',()=>{app.previewLevel=null;renderScene()});
+    $('refreshButton').addEventListener('click',refresh);
+    $('logoutButton').addEventListener('click',async()=>{if(!app.demo)await sb.auth.signOut();location.reload()});
+    (async()=>{const {data:{session}}=await sb.auth.getSession();if(session){app.session=session;await refresh()}})();
+  </script>
+</body>
+</html>
+
