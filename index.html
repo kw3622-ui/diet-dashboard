@@ -285,11 +285,42 @@
 
     const defaultCategories = ['아침식사', '점심식사', '저녁식사', '간식', '야식', '운동'];
     const mealSlotDefinitions = [
-      { key: 'breakfast', category: '아침식사', label: '아침', icon: '🌅', anchorTime: '08:00' },
-      { key: 'lunch', category: '점심식사', label: '점심', icon: '☀️', anchorTime: '13:00' },
-      { key: 'dinner', category: '저녁식사', label: '저녁', icon: '🌙', anchorTime: '19:00' },
+      { key: 'breakfast', category: '아침식사', label: '아침', icon: '🌅', anchorTime: '08:00', minTime: '05:00', maxTime: '11:30' },
+      { key: 'lunch', category: '점심식사', label: '점심', icon: '☀️', anchorTime: '13:00', minTime: '10:30', maxTime: '16:30' },
+      { key: 'dinner', category: '저녁식사', label: '저녁', icon: '🌙', anchorTime: '19:00', minTime: '16:00', maxTime: '23:30' },
     ];
     const mealSlotByCategory = Object.fromEntries(mealSlotDefinitions.map(slot => [slot.category, slot.key]));
+    const mealSlotByCategoryDetail = Object.fromEntries(mealSlotDefinitions.map(slot => [slot.category, slot]));
+    const timeToMinutes = (value) => {
+      const [hour, minute] = String(value || '').split(':').map(Number);
+      return Number.isFinite(hour) && Number.isFinite(minute) ? hour * 60 + minute : null;
+    };
+    const isTimeWithinMealRange = (category, time) => {
+      const slot = mealSlotByCategoryDetail[category];
+      const value = timeToMinutes(time);
+      if (!slot || value === null) return true;
+      return value >= timeToMinutes(slot.minTime) && value <= timeToMinutes(slot.maxTime);
+    };
+    const getMealTimeWarning = (category, time) => {
+      const slot = mealSlotByCategoryDetail[category];
+      if (!slot || !time || isTimeWithinMealRange(category, time)) return null;
+      return {
+        ...slot,
+        message: `${slot.label} 식사 시간이 ${time}로 되어 있습니다. 이 시간이 맞는지 확인해주세요.`
+      };
+    };
+    const getDraftTitle = (category, type) => {
+      if (type === 'biometrics') return '🩺 생체 기록';
+      const titles = {
+        '아침식사': '🌅 아침 기록',
+        '점심식사': '☀️ 점심 기록',
+        '저녁식사': '🌙 저녁 기록',
+        '간식': '🍪 간식 기록',
+        '야식': '🌃 야식 기록',
+        '운동': '🏃 운동 기록',
+      };
+      return titles[category] || '📝 건강 기록';
+    };
     const getRecordTimeLabel = (category) => category === '운동' ? '운동 시작 시각' : (category === '생체기록' ? '측정 시각' : '섭취 시각');
 
     // 음주 기록이 없는 날을 금주로 계산한다. 오늘은 포함하고 미래 날짜는 제외한다.
@@ -511,6 +542,7 @@
       const [draft, setDraft] = useState({
         isOpen: false, isEditMode: false, editLogId: null, editDate: '', editTime: '',
         type: '', data: [], naturalText: '', memo: '', category: '점심식사', isCamera: false,
+        entrySource: 'general', timeAutoMessage: '', timeConfirmed: false,
         bp_sys: '', bp_dia: '', pulse: '', sugar: '', weight: '', sleep_hours: '', existingFoodName: '', existingIngredients: []
       });
 
@@ -1090,7 +1122,7 @@
         }
       };
 
-      const handleFileSelect = (e, isCamera = false) => {
+      const handleFileSelect = (e, isCamera = false, preserveDraft = false) => {
         const files = Array.from(e.target.files);
         if (!files.length) return;
 
@@ -1101,38 +1133,68 @@
         setTimeout(async () => {
           try {
             const base64Arr = await Promise.all(selectedFiles.map(f => compressImage(f)));
-            setDraft({
-                isOpen: true, isEditMode: false, type: 'image', data: base64Arr,
-                naturalText: '', memo: '', category: getDefaultCategoryByTime(),
-                editDate: currentDate, editTime: getCurrentTimeStr(), isCamera: isCamera,
-                bp_sys: '', bp_dia: '', pulse: '', sugar: '', weight: '', sleep_hours: '', existingFoodName: '', existingIngredients: []
-            });
+            if (preserveDraft) {
+              setDraft(prev => ({
+                ...prev, isOpen: true, isEditMode: false, type: 'image', data: base64Arr,
+                isCamera,
+                editTime: isCamera ? getCurrentTimeStr() : prev.editTime,
+                timeAutoMessage: isCamera ? '촬영 기록은 촬영한 현재 시각으로 저장됩니다.' : prev.timeAutoMessage,
+                timeConfirmed: false
+              }));
+            } else {
+              setDraft({
+                  isOpen: true, isEditMode: false, type: 'image', data: base64Arr,
+                  naturalText: '', memo: '', category: getDefaultCategoryByTime(),
+                  editDate: currentDate, editTime: getCurrentTimeStr(), isCamera: isCamera,
+                  entrySource: 'general', timeAutoMessage: isCamera ? '촬영 기록은 촬영한 현재 시각으로 저장됩니다.' : '', timeConfirmed: false,
+                  bp_sys: '', bp_dia: '', pulse: '', sugar: '', weight: '', sleep_hours: '', existingFoodName: '', existingIngredients: []
+              });
+            }
           } catch (err) { setSysError(err.message); } finally { setIsCompressing(false); e.target.value = ''; }
         }, 100);
       };
 
       const openTextDraft = () => {
         setIsMenuOpen(false);
-        setDraft({ isOpen: true, isEditMode: false, type: 'text', data: [], naturalText: '', memo: '', category: getDefaultCategoryByTime(), editDate: currentDate, editTime: getCurrentTimeStr(), isCamera: false, bp_sys: '', bp_dia: '', pulse: '', sugar: '', weight: '', sleep_hours: '', existingFoodName: '', existingIngredients: [] });
+        setDraft({ isOpen: true, isEditMode: false, type: 'text', data: [], naturalText: '', memo: '', category: getDefaultCategoryByTime(), editDate: currentDate, editTime: getCurrentTimeStr(), isCamera: false, entrySource: 'general', timeAutoMessage: '', timeConfirmed: false, bp_sys: '', bp_dia: '', pulse: '', sugar: '', weight: '', sleep_hours: '', existingFoodName: '', existingIngredients: [] });
       };
 
-      // 오늘의 기록표에서 식사 종류가 미리 선택된 한 줄 기록창을 바로 연다.
-      // 과거 날짜는 현재 시각을 잘못 넣지 않도록 각 식사의 기준 시각을 사용한다.
+      // 오늘의 기록표에서 시작하면 해당 식사의 시간대 안에서는 현재 시각을,
+      // 범위를 벗어나거나 과거 날짜이면 식사별 기준 시각을 제안한다.
       const openMealDraft = (slot) => {
         const isToday = currentDate === formatDate(new Date());
+        const nowTime = getCurrentTimeStr();
+        const useCurrentTime = isToday && isTimeWithinMealRange(slot.category, nowTime);
+        const suggestedTime = useCurrentTime ? nowTime : slot.anchorTime;
         setIsMenuOpen(false);
         setDraft({
           isOpen: true, isEditMode: false, editLogId: null,
           type: 'text', data: [], naturalText: '', memo: '', category: slot.category,
-          editDate: currentDate, editTime: isToday ? getCurrentTimeStr() : slot.anchorTime,
+          editDate: currentDate, editTime: suggestedTime,
           isCamera: false, bp_sys: '', bp_dia: '', pulse: '', sugar: '', weight: '', sleep_hours: '',
+          entrySource: 'todayTable',
+          timeAutoMessage: useCurrentTime ? '' : `${slot.label} 기준 시각인 ${slot.anchorTime}로 설정했어요. 실제 식사 시각에 맞게 바꿀 수 있습니다.`,
+          timeConfirmed: false,
+          existingFoodName: '', existingIngredients: []
+        });
+      };
+
+      // 기록표 제목의 간식/운동 버튼은 현재 시각을 유지하는 일반 기록창을 연다.
+      const openQuickDraft = (category) => {
+        setIsMenuOpen(false);
+        setDraft({
+          isOpen: true, isEditMode: false, editLogId: null,
+          type: 'text', data: [], naturalText: '', memo: '', category,
+          editDate: currentDate, editTime: getCurrentTimeStr(), isCamera: false,
+          entrySource: 'headerAction', timeAutoMessage: '', timeConfirmed: false,
+          bp_sys: '', bp_dia: '', pulse: '', sugar: '', weight: '', sleep_hours: '',
           existingFoodName: '', existingIngredients: []
         });
       };
 
       const openBiometricsDraft = () => {
         setIsMenuOpen(false);
-        setDraft({ isOpen: true, isEditMode: false, type: 'biometrics', data: [], naturalText: '', memo: '', category: '생체기록', editDate: currentDate, editTime: getCurrentTimeStr(), isCamera: false, bp_sys: '', bp_dia: '', pulse: '', sugar: '', weight: '', sleep_hours: '', existingFoodName: '', existingIngredients: [] });
+        setDraft({ isOpen: true, isEditMode: false, type: 'biometrics', data: [], naturalText: '', memo: '', category: '생체기록', editDate: currentDate, editTime: getCurrentTimeStr(), isCamera: false, entrySource: 'general', timeAutoMessage: '', timeConfirmed: false, bp_sys: '', bp_dia: '', pulse: '', sugar: '', weight: '', sleep_hours: '', existingFoodName: '', existingIngredients: [] });
       };
 
       const handleEditClick = (log) => {
@@ -1149,6 +1211,7 @@
           isOpen: true, isEditMode: true, editLogId: log.id, editDate: log.date, editTime: log.time,
           type: parsedRaw.type || (log.imageUrl ? 'image' : 'text'), data: images,
           naturalText: fallbackText, memo: parsedRaw.memo || '', category: isCustom ? '직접입력' : log.category, isCamera: false,
+          entrySource: 'edit', timeAutoMessage: '', timeConfirmed: false,
           bp_sys: parsedRaw.biometrics?.bp_sys || '', bp_dia: parsedRaw.biometrics?.bp_dia || '', pulse: parsedRaw.biometrics?.pulse || '', sugar: parsedRaw.biometrics?.sugar || '',
           weight: parsedRaw.biometrics?.weight || '', sleep_hours: parsedRaw.biometrics?.sleep_hours || '',
           existingFoodName: log.foodName, existingIngredients: log.ingredients
@@ -1194,6 +1257,11 @@
         if (draft.type === 'biometrics' && !draft.bp_sys && !draft.bp_dia && !draft.pulse && !draft.sugar && !draft.weight && !draft.sleep_hours) return setSysError("최소 하나 이상의 수치를 입력해주세요!");
 
         const finalCategory = draft.type === 'biometrics' ? '생체기록' : (draft.category === '직접입력' ? (customCategory || '기타') : draft.category);
+        const mealTimeWarning = getMealTimeWarning(finalCategory, draft.editTime);
+        if (mealTimeWarning && !draft.timeConfirmed) {
+          setSysError('식사 시간이 평소 시간대와 크게 다릅니다. 기록창에서 시간을 확인해주세요.');
+          return;
+        }
 
         const payload = {
           type: draft.type, base64Images: Array.isArray(draft.data) ? draft.data : [draft.data].filter(Boolean),
@@ -1205,7 +1273,7 @@
         };
         const isEdit = draft.isEditMode; const editId = draft.editLogId;
 
-        setDraft({ isOpen: false, isEditMode: false, type: '', data: [], naturalText: '', memo: '', category: '', bp_sys: '', bp_dia: '', pulse: '', sugar: '', weight: '', sleep_hours: '', existingFoodName: '', existingIngredients: [] });
+        setDraft({ isOpen: false, isEditMode: false, type: '', data: [], naturalText: '', memo: '', category: '', entrySource: 'general', timeAutoMessage: '', timeConfirmed: false, bp_sys: '', bp_dia: '', pulse: '', sugar: '', weight: '', sleep_hours: '', existingFoodName: '', existingIngredients: [] });
         setSysError("");
         nudgeViewportRepaint(); // ★ [버그수정] 메인화면 복귀 직후 터치 좌표 어긋남 방지
 
@@ -1796,6 +1864,7 @@
       }
 
       const displayDateStr = currentDate === formatDate(new Date()) ? `오늘 (${getDayStr(currentDate)})` : `${currentDate} (${getDayStr(currentDate)})`;
+      const draftMealTimeWarning = draft.isOpen ? getMealTimeWarning(draft.category, draft.editTime) : null;
       const todayRecordRows = (() => {
         const mealRows = mealSlotDefinitions.map(slot => {
           const matches = logs.filter(log => log.category === slot.category).sort((a, b) => a.time.localeCompare(b.time));
@@ -1899,13 +1968,21 @@
                 </div>
 
                 <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100" data-today-records>
-                  <div className="flex items-center justify-between gap-3 mb-4">
-                    <div>
+                  <div className="flex items-start justify-between gap-2 mb-4">
+                    <div className="min-w-0">
                       <h2 className="font-bold text-gray-800">🗓️ 오늘의 기록표</h2>
                       <p className="text-xs text-gray-400 mt-0.5">안 먹음과 미기록을 구분해요</p>
                     </div>
-                    {isFetching && <span className="text-xs text-blue-500 font-bold animate-pulse whitespace-nowrap">불러오는 중</span>}
+                    <div className="shrink-0 flex items-center gap-1.5" data-today-quick-actions>
+                      <button type="button" onClick={() => openQuickDraft('간식')}
+                        className="whitespace-nowrap text-[11px] font-bold px-2.5 py-2 rounded-xl bg-amber-50 text-amber-700 border border-amber-100 active:scale-95 transition"
+                        aria-label="간식 기록하기">🍪 간식</button>
+                      <button type="button" onClick={() => openQuickDraft('운동')}
+                        className="whitespace-nowrap text-[11px] font-bold px-2.5 py-2 rounded-xl bg-green-50 text-green-700 border border-green-100 active:scale-95 transition"
+                        aria-label="운동 기록하기">🏃 운동</button>
+                    </div>
                   </div>
+                  {isFetching && <p className="text-[11px] text-blue-500 font-bold animate-pulse mb-2">기록을 불러오는 중입니다.</p>}
                   <div className="space-y-2.5">
                     {todayRecordRows.map(row => {
                       if (row.kind === 'extra') {
@@ -2903,9 +2980,35 @@
           {draft.isOpen && (
             <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 touch-none">
               <form onSubmit={(e) => { e.preventDefault(); handleUploadConfirm(); }} className="bg-white rounded-3xl w-full max-w-md p-6 shadow-2xl max-h-[90vh] overflow-y-auto no-scrollbar pointer-events-auto">
-                <h2 className="text-xl font-bold text-gray-800 mb-5">
-                  {draft.isEditMode ? '✏️ 기록 수정' : (draft.type === 'biometrics' ? '🩺 생체 기록' : (draft.type === 'image' ? '📸 사진 기록' : '✍️ 한 줄 기록'))}
+                <h2 className="text-xl font-bold text-gray-800 mb-1">
+                  {draft.isEditMode ? '✏️ 기록 수정' : getDraftTitle(draft.category, draft.type)}
                 </h2>
+
+                {!draft.isEditMode && draft.type !== 'biometrics' && (
+                  <div className="mb-5">
+                    <p className="text-xs font-bold text-gray-500 mb-2.5">기록 방법을 선택하세요</p>
+                    <div className="grid grid-cols-3 gap-2" data-record-methods>
+                    <button type="button" aria-label="한 줄 기록 선택" onClick={() => setDraft(prev => ({...prev, type: 'text', data: [], isCamera: false, timeAutoMessage: prev.entrySource === 'todayTable' ? prev.timeAutoMessage : ''}))}
+                      className={`relative min-h-[68px] rounded-2xl border-2 flex flex-col items-center justify-center gap-0.5 active:scale-95 transition ${draft.type === 'text' ? 'bg-blue-600 border-blue-600 text-white shadow-md ring-2 ring-blue-100' : 'bg-blue-50 border-blue-100 text-blue-700'}`}>
+                      <span className="text-xl leading-none">✍️</span>
+                      <span className="whitespace-nowrap text-xs font-black">한 줄{draft.type === 'text' ? ' ✓' : ''}</span>
+                      <span className={`whitespace-nowrap text-[10px] font-medium ${draft.type === 'text' ? 'text-blue-100' : 'text-blue-500'}`}>직접 입력</span>
+                    </button>
+                    <label role="button" tabIndex="0" aria-label="사진 촬영 선택" className={`relative min-h-[68px] rounded-2xl border-2 flex flex-col items-center justify-center gap-0.5 text-center cursor-pointer active:scale-95 transition ${draft.type === 'image' && draft.isCamera ? 'bg-violet-600 border-violet-600 text-white shadow-md ring-2 ring-violet-100' : 'bg-violet-50 border-violet-100 text-violet-700'}`}>
+                      <span className="text-xl leading-none">📷</span>
+                      <span className="whitespace-nowrap text-xs font-black">촬영{draft.type === 'image' && draft.isCamera ? ' ✓' : ''}</span>
+                      <span className={`whitespace-nowrap text-[10px] font-medium ${draft.type === 'image' && draft.isCamera ? 'text-violet-100' : 'text-violet-500'}`}>지금 촬영</span>
+                      <input type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => handleFileSelect(e, true, true)} />
+                    </label>
+                    <label role="button" tabIndex="0" aria-label="앨범 사진 선택" className={`relative min-h-[68px] rounded-2xl border-2 flex flex-col items-center justify-center gap-0.5 text-center cursor-pointer active:scale-95 transition ${draft.type === 'image' && !draft.isCamera ? 'bg-teal-600 border-teal-600 text-white shadow-md ring-2 ring-teal-100' : 'bg-teal-50 border-teal-100 text-teal-700'}`}>
+                      <span className="text-xl leading-none">🖼️</span>
+                      <span className="whitespace-nowrap text-xs font-black">앨범{draft.type === 'image' && !draft.isCamera ? ' ✓' : ''}</span>
+                      <span className={`whitespace-nowrap text-[10px] font-medium ${draft.type === 'image' && !draft.isCamera ? 'text-teal-100' : 'text-teal-500'}`}>최대 5장</span>
+                      <input type="file" accept="image/*" multiple className="hidden" onChange={(e) => handleFileSelect(e, false, true)} />
+                    </label>
+                    </div>
+                  </div>
+                )}
 
                 <div className="mb-6 flex gap-3">
                   <div className="flex-1">
@@ -2917,17 +3020,35 @@
                     {draft.isCamera && !draft.isEditMode ? (
                       <div className="w-full bg-gray-100 border border-gray-200 rounded-xl p-3 text-gray-500 font-medium text-center text-sm cursor-not-allowed">{draft.editTime} (자동)</div>
                     ) : (
-                      <input type="time" value={draft.editTime} onClick={openDateTimePicker} onChange={e => setDraft({...draft, editTime: e.target.value})} onBlur={handleInputBlur} className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3 outline-none focus:border-blue-500 text-sm" />
+                      <input type="time" value={draft.editTime} onClick={openDateTimePicker} onChange={e => setDraft({...draft, editTime: e.target.value, timeAutoMessage: '', timeConfirmed: false})} onBlur={handleInputBlur} className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3 outline-none focus:border-blue-500 text-sm" />
                     )}
                   </div>
                 </div>
+
+                {draft.timeAutoMessage && (
+                  <p className="-mt-3 mb-4 text-xs leading-relaxed text-blue-700 bg-blue-50 border border-blue-100 rounded-xl px-3 py-2.5" data-time-auto-message>{draft.timeAutoMessage}</p>
+                )}
+
+                {draftMealTimeWarning && !draft.timeConfirmed && (
+                  <div className="-mt-2 mb-5 bg-amber-50 border border-amber-200 rounded-2xl p-3" data-meal-time-warning>
+                    <p className="text-xs font-bold leading-relaxed text-amber-900">⏰ {draftMealTimeWarning.message}</p>
+                    <div className="grid grid-cols-2 gap-2 mt-2.5">
+                      {!draft.isCamera ? (
+                        <button type="button" onClick={() => { setDraft(prev => ({...prev, editTime: draftMealTimeWarning.anchorTime, timeAutoMessage: `${draftMealTimeWarning.label} 기준 시각인 ${draftMealTimeWarning.anchorTime}로 변경했어요.`, timeConfirmed: false})); setSysError(''); }}
+                          className="whitespace-nowrap text-[11px] font-bold py-2 rounded-lg bg-white text-amber-800 border border-amber-200">{draftMealTimeWarning.anchorTime}로 변경</button>
+                      ) : <span />}
+                      <button type="button" onClick={() => { setDraft(prev => ({...prev, timeConfirmed: true})); setSysError(''); }}
+                        className="whitespace-nowrap text-[11px] font-bold py-2 rounded-lg bg-amber-600 text-white">{draft.editTime} 사용</button>
+                    </div>
+                  </div>
+                )}
 
                 {draft.type !== 'biometrics' && (
                   <div className="mb-6">
                     <label className="text-sm font-bold text-gray-600 mb-2 block">무엇을 하셨나요?</label>
                     <div className="flex flex-wrap gap-2">
                       {defaultCategories.filter(c => c !== '생체기록').map(cat => (
-                        <button type="button" key={cat} onClick={() => setDraft({...draft, category: cat})} className={`px-4 py-2 rounded-full text-sm font-bold transition ${draft.category === cat ? (cat === '운동' ? 'bg-green-500 text-white' : 'bg-blue-600 text-white') : 'bg-gray-100 text-gray-600'}`}>
+                        <button type="button" key={cat} onClick={() => setDraft({...draft, category: cat, timeConfirmed: false})} className={`px-4 py-2 rounded-full text-sm font-bold transition ${draft.category === cat ? (cat === '운동' ? 'bg-green-500 text-white' : 'bg-blue-600 text-white') : 'bg-gray-100 text-gray-600'}`}>
                           {cat === '운동' ? '🏃‍♂️ ' : ''}{cat}
                         </button>
                       ))}
@@ -3025,3 +3146,4 @@
   </script>
 </body>
 </html>
+
