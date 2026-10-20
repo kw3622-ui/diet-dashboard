@@ -26,6 +26,6 @@
 ## 배포 범위
 
 - 시험 페이지: `index_v0.3.0.html`
-- Edge Function: `diet-ai` v17 (`diet-ai_v0.0.9.ts`)
+- Edge Function: `diet-ai` v18 (`diet-ai_v0.0.9.ts`)
 - 운영용 `index.html`은 변경하지 않았습니다.
 
