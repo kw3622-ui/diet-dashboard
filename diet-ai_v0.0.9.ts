@@ -806,6 +806,10 @@ function conditionBelongsToProfile(label: string, profileDisease: string) {
   return !!def && def.keywords.some((keyword) => profileDisease.includes(keyword));
 }
 
+function todayInSeoul() {
+  return new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
 function ingredientDisplayName(value: unknown) {
   const raw = String(value || "").trim();
   return (raw.includes("(") ? raw.slice(0, raw.indexOf("(")) : raw).trim().slice(0, 80);
@@ -888,7 +892,7 @@ async function handleConditionReport(supabase: any, userId: string, p: any) {
   const profileDisease = String(p?.disease || "");
   if (!conditionBelongsToProfile(conditionLabel, profileDisease)) throw new Error("회원정보에 등록된 기저질환만 분석할 수 있습니다.");
 
-  const endDate = new Date().toISOString().slice(0, 10);
+  const endDate = todayInSeoul();
   const startDate = addDaysStr(endDate, -59);
   const recentStart = addDaysStr(endDate, -29);
   const previousEnd = addDaysStr(recentStart, -1);
