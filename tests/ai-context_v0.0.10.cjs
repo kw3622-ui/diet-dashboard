@@ -1,0 +1,337 @@
+const fs = require('node:fs');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const { stripTypeScriptTypes } = require('node:module');
+const filename = process.argv[2] || 'diet-dashboard/diet-ai_v0.0.10.ts';
+const source = stripTypeScriptTypes(fs.readFileSync(filename, 'utf8')).replace(/^import .*;$/gm, '');
+let handler, prompts = [], writes = [], reads = [], rows = [], mealStatuses = [], healthTagRows = [], conditionReportRows = [], periodGoals = [], failHistory = false, approved = true, nextAiData = null;
+const user = 'test-user';
+const profile = {id:user, is_approved:true, is_admin:false, age:42, height:173, gender:'male', disease:'통풍, 고혈압, 경계성 혈당', ai_mode:'normal'};
+function query(table) {
+  const filters = [], orders = [];
+  let start = 0, end = Infinity, single = false, operation, values, columns = '*';
+  const q = {
+    select(v = '*') { columns = v; return q; },
+    eq(k,v) { filters.push(r => r[k] === v); return q; },
+    neq(k,v) { filters.push(r => r[k] !== v); return q; },
+    lt(k,v) { filters.push(r => r[k] < v); return q; },
+    lte(k,v) { filters.push(r => r[k] <= v); return q; },
+    gte(k,v) { filters.push(r => r[k] >= v); return q; },
+    in(k,v) { filters.push(r => v.includes(r[k])); return q; },
+    order(k,o) { orders.push([k,o.ascending]); return q; },
+    range(a,b) { start = a; end = b; return q; },
+    limit(n) { end = n - 1; return q; },
+    single() { single = true; return q; },
+    maybeSingle() { single = true; return q; },
+    insert(v) { operation = 'insert'; values = v; return q; },
+    delete() { operation = 'delete'; return q; },
+    update(v) { operation = 'update'; values = v; return q; },
+    upsert(v) { operation = 'upsert'; values = v; return q; },
+    then(resolve,reject) {
+      try {
+        if (operation) {
+          writes.push({table,operation,values});
+          const saved = {...values,id:table === 'condition_reports' ? 'saved-'+writes.length : 'saved',created_at:'2026-10-20T00:00:00Z'};
+          if (table === 'condition_reports' && operation === 'insert') conditionReportRows.push(saved);
+          return Promise.resolve({data: single ? saved : [saved], error:null}).then(resolve,reject);
+        }
+        reads.push({table,start,columns});
+        if (failHistory && columns === 'id, log_date, log_time, raw_input') {
+          return Promise.resolve({data:null,error:{message:'simulated outage'}}).then(resolve,reject);
+        }
+        let result = (table === 'profiles' ? [{...profile,is_approved:approved}] : table === 'logs' ? rows : table === 'meal_statuses' ? mealStatuses : table === 'food_health_tags' ? healthTagRows : table === 'condition_reports' ? conditionReportRows : table === 'period_goals' ? periodGoals : [])
+          .filter(r => filters.every(f => f(r)));
+        result.sort((a,b) => {
+          for (const [key,asc] of orders) {
+            const delta = String(a[key]).localeCompare(String(b[key]));
+            if (delta) return asc ? delta : -delta;
+          }
+          return 0;
+        });
+        result = result.slice(start,end + 1);
+        return Promise.resolve({data:single ? result[0] : result,error:null}).then(resolve,reject);
+      } catch(e) { return Promise.reject(e).then(resolve,reject); }
+    }
+  };
+  return q;
+}
+const client = {
+  from:query,
+  auth:{getUser:async()=>({data:{user:{id:user}},error:null})},
+  storage:{from:()=>({
+    upload:async()=>({error:null}),
+    getPublicUrl:path=>({data:{publicUrl:'https://example.invalid/'+path}})
+  })}
+};
+const sandbox = {
+  console, Request, Response, Uint8Array, atob,
+  Deno:{env:{get:()=> 'test-only'},serve:fn=>{handler=fn;}},
+  createClient:()=>client,
+  fetch:async(url,options)=>{
+    const body = JSON.parse(options.body);
+    prompts.push(body.contents[0].parts[0].text);
+    const answer = body.generationConfig.responseMimeType === 'text/plain' ? 'test report' :
+      JSON.stringify(nextAiData || {foodName:'test',analysis:'test',ingredients:[],isAlcohol:false,healthTags:[],grade:'A',comment:'test'});
+    nextAiData = null;
+    return new Response(JSON.stringify({candidates:[{content:{parts:[{text:answer}]}}]}));
+  }
+};
+vm.createContext(sandbox);
+new vm.Script(source, {filename}).runInContext(sandbox);
+const bio = (id,date,time,values,who=user) => ({
+  id,user_id:who,log_date:date,log_time:time,category:'생체기록',raw_input:{biometrics:values}
+});
+async function request(action, payload) {
+  prompts = []; writes = []; reads = [];
+  const response = await handler(new Request('https://example.invalid/diet-ai',{
+    method:'POST', headers:{Authorization:'Bearer test'},
+    body:JSON.stringify({action,payload})
+  }));
+  const body = await response.json();
+  assert.equal(response.status,200,JSON.stringify(body));
+  assert.equal(prompts.length,1,'exactly one AI call per feedback request');
+  return {body,prompt:prompts[0]};
+}
+let passed=0;
+async function test(name,fn) { await fn(); passed++; console.log('PASS '+name); }
+(async()=>{
+  await test('all biometric deltas, sparse fields, dates, future/current/same-minute excluded',()=>{
+    const data = [
+      bio('future','2026-10-01','09:00',{weight:999}),
+      bio('edit','2026-09-28','09:00',{weight:888}),
+      bio('same','2026-09-30','10:00:00',{weight:777}),
+      bio('a','2026-09-29','09:00',{weight:70,bp_sys:130,bp_dia:80,sugar:100,pulse:65,sleep_hours:6}),
+      bio('b','2026-09-20','09:00',{weight:72,sugar:110}),
+    ];
+    const s = sandbox.buildBiometricContext(data,'2026-09-30','10:00',
+      {weight:68,bp_sys:120,bp_dia:85,sugar:100,pulse:70,sleep_hours:0},'edit');
+    assert.match(s,/이번-직전 -2kg \(하락\)/);
+    assert.match(s,/이번-직전 -10mmHg \(하락\)/);
+    assert.match(s,/이번-직전 \+5mmHg \(상승\)/);
+    assert.match(s,/이번-직전 0mg\/dL \(동일\)/);
+    assert.match(s,/이번-직전 \+5bpm \(상승\)/);
+    assert.match(s,/이번-직전 -6시간 \(하락\)/);
+    assert.match(s,/평균 71kg/);
+    assert.match(s,/2026-09-29 09:00 70kg/);
+    assert.doesNotMatch(s,/999|888|777/);
+  });
+  await test('missing/invalid readings never become fabricated zero values',()=>{
+    const s=sandbox.buildBiometricContext([
+      bio('a','2026-09-29','09:00',{weight:'',sugar:false,bp_sys:-1}),
+      bio('b','2026-09-28','09:00',{weight:'70.5'}),
+    ],'2026-09-30','10:00',{weight:70.5,sugar:95,bp_sys:null});
+    assert.match(s,/직전 2026-09-28 09:00 70.5kg/);
+    assert.match(s,/직전 비교 기록 없음/);
+    assert.doesNotMatch(s,/수축기 혈압/);
+    assert.match(s,/추세 판단 자료 부족/);
+    assert.equal(sandbox.bioNumber('  ','weight'),null);
+  });
+  await test('new biometric request, server profile overrides forged client, saves once',async()=>{
+    rows=[bio('past','2026-09-29','09:00',{weight:70}),
+      bio('other','2026-09-29','20:00',{weight:999},'different-user')];
+    const {prompt,body}=await request('analyze',{
+      type:'biometrics',category:'생체기록',date:'2026-09-30',time:'10:00',
+      biometrics:{weight:68},healthProfile:{age:99}
+    });
+    assert.match(prompt,/이번-직전 -2kg \(하락\)/);
+    assert.match(prompt,/나이 42세/); assert.match(prompt,/키 173cm/);
+    assert.doesNotMatch(prompt,/999|나이 99세/);
+    assert.equal(body.id,'saved');
+    assert.equal(writes.length,1);
+    assert.equal(writes[0].values.raw_input.biometrics.weight,68);
+  });
+  await test('editing excludes old self and old AI title while preserving update/reset',async()=>{
+    rows=[bio('edit','2026-09-15','08:00',{weight:888}),
+      bio('past','2026-09-10','09:00',{weight:70}),
+      bio('future','2026-09-25','09:00',{weight:999})];
+    const {prompt}=await request('reanalyze',{id:'edit',type:'biometrics',category:'생체기록',
+      date:'2026-09-20',time:'10:00',biometrics:{weight:68},existingFoodName:'OLD_BIO_TITLE'});
+    assert.match(prompt,/이번-직전 -2kg \(하락\)/);
+    assert.doesNotMatch(prompt,/888|999|OLD_BIO_TITLE/);
+    assert.equal(writes[0].operation,'update');
+    assert.equal(writes[0].values.followup_question,null);
+    assert.equal(writes[0].values.followup_answer,null);
+  });
+  await test('history pagination and old per-field predecessor with strict 28-day window',async()=>{
+    rows=Array.from({length:1100},(_,i)=>bio('r'+i,'2026-09-20','08:00',{sugar:100}));
+    rows.push(bio('oldweight','2026-08-01','08:00',{weight:70}));
+    const s=await sandbox.getBiometricContext(client,user,'2026-09-30','10:00',{weight:68,sugar:95});
+    assert.match(s,/직전 2026-08-01 08:00 70kg/);
+    assert.match(s,/이번 측정 제외 최근 28일 0회/);
+    assert.match(s,/최근 28일 1100회/);
+    assert.ok(reads.some(r=>r.start===1000));
+  });
+  await test('food memo survives context; future and edited meals excluded; photo coaching kept',async()=>{
+    rows=[
+      {id:'prior',user_id:user,log_date:'2026-09-30',log_time:'08:00',category:'아침식사',food_name:'식사',raw_input:{memo:'밥 반 공기만 먹음',naturalText:'사과 반 개'}},
+      {id:'later',user_id:user,log_date:'2026-09-30',log_time:'20:00',category:'저녁식사',food_name:'LATER_MEAL'},
+      {id:'self',user_id:user,log_date:'2026-09-30',log_time:'07:00',category:'아침식사',food_name:'OLD_SELF'},
+    ];
+    let out=await request('reanalyze',{id:'self',type:'image',category:'점심식사',date:'2026-09-30',time:'12:00',memo:'두 입',existingFoodName:'보존할 음식'});
+    assert.match(out.prompt,/밥 반 공기만 먹음/);
+    assert.match(out.prompt,/사과 반 개/);
+    assert.match(out.prompt,/보존할 음식/);
+    assert.doesNotMatch(out.prompt,/LATER_MEAL|OLD_SELF/);
+    out=await request('analyze',{type:'image',category:'점심식사',date:'2026-09-30',time:'12:00',memo:'두 입',base64Images:['data:image/jpeg;base64,YQ==']});
+    assert.match(out.prompt,/사진 속 분량과 구성 코칭/);
+    assert.ok(out.body.imageUrl);
+  });
+  await test('text, daily, weekly, monthly and followup use stored demographics',async()=>{
+    rows=[{id:'food',user_id:user,food_name:'식사',ingredients:[],analysis:'test',followup_question:null}];
+    for(const [action,payload] of [
+      ['analyze',{type:'text',category:'점심식사',date:'2026-09-30',time:'12:00',naturalText:'계란 두 개'}],
+      ['dailyReport',{date:'2026-09-30',summaryData:'오늘 요약'}],
+      ['periodReport',{periodStart:'2026-09-01',summaryData:'월간 요약',isMonth:true}],
+      ['periodReport',{periodStart:'2026-09-28',summaryData:'주간 요약',isMonth:false}],
+      ['followupQuestion',{id:'food',question:'양이 어떤가요?'}]
+    ]) {
+      const {prompt}=await request(action,payload);
+      assert.match(prompt,/나이 42세/);
+      assert.equal(writes.length,1);
+    }
+  });
+  await test('period report uses server-stored goal and server-calculated progress',async()=>{
+    periodGoals=[{user_id:user,period_type:'week',period_start:'2026-09-28',status:'active',exercise_target:4,alcohol_free_target:5,weight_target:72,bp_sys_target:120,bp_dia_target:80,sugar_target:100}];
+    rows=[
+      {id:'ex-1',user_id:user,log_date:'2026-09-28',log_time:'18:00',category:'운동',is_alcohol:false,raw_input:{naturalText:'걷기 30분'}},
+      {id:'ex-2',user_id:user,log_date:'2026-09-29',log_time:'18:00',category:'운동',is_alcohol:false,raw_input:{naturalText:'걷기 30분'}},
+      {id:'drink',user_id:user,log_date:'2026-09-29',log_time:'19:00',category:'저녁식사',is_alcohol:true,raw_input:{}},
+      {id:'bio-old',user_id:user,log_date:'2026-09-29',log_time:'07:00',category:'생체기록',is_alcohol:false,raw_input:{biometrics:{weight:75,sugar:110,bp_sys:132,bp_dia:88}}},
+      {id:'bio-new',user_id:user,log_date:'2026-09-30',log_time:'07:00',category:'생체기록',is_alcohol:false,raw_input:{biometrics:{weight:74.6,sugar:101,bp_sys:128,bp_dia:84}}},
+    ];
+    const {prompt}=await request('periodReport',{periodStart:'2026-09-28',summaryData:'주간 요약',isMonth:false,
+      periodGoal:{exercise_target:99},goalProgress:{exerciseDays:99}});
+    assert.match(prompt,/서버에서 확인한 기간 목표와 실제 진행/);
+    assert.match(prompt,/운동 목표: 4일 \/ 실제 운동 기록일 2일/);
+    assert.match(prompt,/금주 목표: 5일 \/ 오늘까지 음주 기록이 없는 날 6일/);
+    assert.match(prompt,/기간 내 최근 2026-09-30 74.6kg/);
+    assert.match(prompt,/128\/84mmHg/);
+    assert.match(prompt,/101mg\/dL/);
+    assert.doesNotMatch(prompt,/99일/);
+    assert.ok(reads.some(r=>r.table==='period_goals'),'goal must be read by the server');
+    periodGoals=[];
+  });
+  await test('skipped period goal is explicit and never treated as failure',async()=>{
+    periodGoals=[{user_id:user,period_type:'month',period_start:'2026-09-01',status:'skipped'}]; rows=[];
+    const {prompt}=await request('periodReport',{periodStart:'2026-09-01',summaryData:'월간 요약',isMonth:true});
+    assert.match(prompt,/이 기간은 목표를 설정하지 않기로 했습니다/);
+    assert.match(prompt,/목표 미설정을 실패로 평가하지 마세요/);
+    assert.doesNotMatch(prompt,/운동 목표:/);
+    periodGoals=[];
+  });
+  await test('recent seven days outrank previous seven days and meal states stay explicit',async()=>{
+    rows=[
+      {id:'meal',user_id:user,log_date:'2026-09-30',log_time:'08:00',category:'아침식사',food_name:'아침'},
+      {id:'old-ex',user_id:user,log_date:'2026-09-18',log_time:'18:00',category:'운동',food_name:'걷기 20분',raw_input:{naturalText:'걷기 20분'}},
+      ...['23','24','25','27','29'].map((day,i)=>({id:'new-ex-'+i,user_id:user,log_date:'2026-09-'+day,log_time:'18:00',category:'운동',food_name:'걷기 40분',raw_input:{naturalText:'걷기 40분'}})),
+    ];
+    mealStatuses=[{user_id:user,status_date:'2026-09-30',meal_slot:'lunch',status:'skipped'}];
+    const {prompt}=await request('analyze',{type:'text',category:'점심식사',date:'2026-09-30',time:'12:00',naturalText:'소고기국과 밥'});
+    assert.match(prompt,/최근 7일 운동 기록: 5일, 확인된 총 200분/);
+    assert.match(prompt,/그 이전 7일 운동 기록: 1일, 확인된 총 20분/);
+    assert.match(prompt,/최근 7일의 운동 기록이 뚜렷하게 늘었거나 연속됐다면 14일 전체의 공백 때문에 '일정하지 않다'고 평가하지 마세요/);
+    assert.match(prompt,/점심: 안 먹음으로 직접 확인/);
+    assert.match(prompt,/간식·야식: 기록 없음\(먹지 않았다고 확인된 것은 아님\)/);
+    assert.match(prompt,/직전 섭취 기록과의 간격: 약 4시간 0분/);
+    assert.match(prompt,/소고기·돼지고기를 먹었다는 사실만으로 통풍 경고를 반복/);
+    assert.match(prompt,/국이 있다는 이유만으로 국물을 짜게 먹었다고 가정하지 마세요/);
+  });
+  await test('long recording gap is disclosed without inventing fasting or behavior',async()=>{
+    rows=[{id:'old',user_id:user,log_date:'2026-09-26',log_time:'19:00',category:'저녁식사',food_name:'저녁'}];
+    mealStatuses=[];
+    const {prompt}=await request('dailyReport',{date:'2026-09-30',summaryData:'오늘 점심 기록'});
+    assert.match(prompt,/이번 기록 전 연속 전체 기록 공백: 3일/);
+    assert.match(prompt,/공백 이전 식단과 현재 식단을 직접 이어서 비교하거나, 그 기간의 식사·운동·공복을 추정하지 마세요/);
+    assert.match(prompt,/미기록을 결식·공복·운동 부족으로 단정하지 마세요/);
+  });
+  await test('health tags keep only configured diseases with evidence and confidence',async()=>{
+    rows=[]; mealStatuses=[];
+    nextAiData={foodName:'회식',analysis:'test',ingredients:['소주(1병)','샐러드(채소)'],isAlcohol:true,healthTags:[
+      {foodIndex:0,sourceQuote:'소주 1병',diseaseKey:'gout',polarity:'caution',confidence:0.95,evidence:'소주 1병'},
+      {foodIndex:1,sourceQuote:'샐러드',diseaseKey:'hypertension',polarity:'helpful',confidence:0.84,evidence:'채소 섭취'},
+      {foodIndex:0,sourceQuote:'소주 1병',diseaseKey:'liver',polarity:'caution',confidence:0.99,evidence:'등록되지 않은 질환'},
+      {foodIndex:0,sourceQuote:'소주 1병',diseaseKey:'gout',polarity:'helpful',confidence:0.4,evidence:'약한 추정'},
+    ]};
+    const {body,prompt}=await request('analyze',{type:'text',category:'저녁식사',date:'2026-09-30',time:'19:00',naturalText:'소주 1병과 샐러드'});
+    assert.match(prompt,/healthTags/);
+    assert.equal(body.healthTags.length,2);
+    assert.deepEqual(body.healthTags.map(t=>t.tagLabel),['통풍 주의','혈압에 도움']);
+    const tagWrite=writes.find(w=>w.table==='food_health_tags'&&w.operation==='insert');
+    assert.equal(tagWrite.values.length,2);
+    assert.equal(tagWrite.values[0].source,'ai');
+    assert.equal(JSON.stringify(tagWrite.values.map(t=>t.food_name)),JSON.stringify(['소주 1병','샐러드']));
+  });
+  await test('invented dish names and qualifier-free helpful labels are rejected',async()=>{
+    rows=[]; mealStatuses=[];
+    nextAiData={foodName:'점심',analysis:'test',ingredients:['물만두떡국','쌀밥'],isAlcohol:false,healthTags:[
+      {foodIndex:0,sourceQuote:'물만두떡국',diseaseKey:'diabetes',polarity:'caution',confidence:0.95,evidence:'AI가 만든 음식명'},
+      {foodIndex:1,sourceQuote:'쌀밥',diseaseKey:'diabetes',polarity:'helpful',confidence:0.9,evidence:'양 조절 추정'},
+      {foodIndex:1,sourceQuote:'밥은 반공기만',diseaseKey:'diabetes',polarity:'helpful',confidence:0.9,evidence:'반 공기 섭취를 명시함'},
+      {foodIndex:0,sourceQuote:'국물은 조금만 먹고',diseaseKey:'hypertension',polarity:'helpful',confidence:0.9,evidence:'국물 섭취량을 줄임'},
+    ]};
+    const {body}=await request('analyze',{type:'text',category:'점심식사',date:'2026-10-19',time:'12:00',naturalText:'장터순대 국물은 조금만 먹고 밥은 반공기만'});
+    assert.equal(body.healthTags.length,2);
+    assert.deepEqual(body.healthTags.map(t=>t.foodName),['밥은 반공기만','국물은 조금만 먹고']);
+    assert.ok(body.healthTags.every(t=>!t.foodName.includes('물만두떡국')&&!/^쌀밥$/.test(t.foodName)));
+  });
+  await test('stored health tag counts are supplied to daily report',async()=>{
+    rows=[{id:'meal-a',user_id:user,log_date:'2026-09-30',log_time:'19:00',category:'저녁식사',food_name:'소주'}];
+    healthTagRows=[
+      {user_id:user,log_id:'meal-a',tag_label:'통풍 주의',disease_key:'gout',polarity:'caution',food_name:'소주'},
+      {user_id:user,log_id:'meal-a',tag_label:'통풍 주의',disease_key:'gout',polarity:'caution',food_name:'맥주'},
+    ];
+    const {prompt}=await request('dailyReport',{date:'2026-09-30',summaryData:'저녁 기록'});
+    assert.match(prompt,/저장된 건강 영향 태그 집계/);
+    assert.match(prompt,/통풍 주의: 2회 \(소주, 맥주\)/);
+    healthTagRows=[];
+  });
+  await test('condition report compares two 30-day windows, keeps observed foods, and saves history',async()=>{
+    const today=new Date().toISOString().slice(0,10);
+    const day=(offset)=>{const d=new Date(today+'T00:00:00Z');d.setUTCDate(d.getUTCDate()+offset);return d.toISOString().slice(0,10);};
+    conditionReportRows=[];
+    rows=[
+      {id:'old-meal',user_id:user,log_date:day(-45),log_time:'12:00',category:'점심식사',food_name:'점심',ingredients:['현미밥(반공기)','닭가슴살'],raw_input:{naturalText:'현미밥 반공기와 닭가슴살'},is_alcohol:false,food_health_tags:[]},
+      {id:'new-meal-1',user_id:user,log_date:day(-10),log_time:'12:00',category:'점심식사',food_name:'점심',ingredients:['현미밥(반공기)','두부'],raw_input:{naturalText:'현미밥 반공기와 두부'},is_alcohol:false,food_health_tags:[]},
+      {id:'new-meal-2',user_id:user,log_date:day(-8),log_time:'19:00',category:'저녁식사',food_name:'회식',ingredients:['소주(600ml)','삼겹살'],raw_input:{naturalText:'소주 600ml와 삼겹살'},is_alcohol:true,food_health_tags:[{tag_label:'통풍 주의',disease_key:'gout',polarity:'caution',food_name:'소주 600ml'}]},
+      {id:'new-ex',user_id:user,log_date:day(-5),log_time:'18:00',category:'운동',food_name:'걷기 40분',ingredients:['걷기(40분)'],raw_input:{naturalText:'걷기 40분'},is_alcohol:false,food_health_tags:[]},
+      {id:'new-bio',user_id:user,log_date:day(-2),log_time:'07:00',category:'생체기록',food_name:'생체 수치',ingredients:[],raw_input:{biometrics:{weight:74.2,sugar:102,bp_sys:130,bp_dia:91,sleep_hours:5.3}},is_alcohol:false,food_health_tags:[]},
+    ];
+    nextAiData={status:'needs_attention',headline:'음주 습관을 먼저 줄일 때입니다',summary:'최근 기록을 종합한 평가',comparison:'이전 30일보다 운동 기록은 늘었지만 음주 기록이 있습니다.',frequentFoods:[
+      {name:'현미밥',impact:'helpful',reason:'60일 동안 2회 기록'},
+      {name:'케이크',impact:'caution',reason:'기록에 없는 음식'},
+    ],positiveHabits:['걷기 기록이 확인됨'],cautionHabits:['소주 600ml 기록이 확인됨'],nextActions:['다음 30일 음주 횟수를 기록하기']};
+    const first=await request('conditionReport',{conditionLabel:'통풍'});
+    assert.match(first.prompt,/최근 30일과 그 이전 30일을 우선 비교/);
+    assert.match(first.prompt,/현미밥 반공기와 두부/);
+    assert.equal(first.body.report_data.frequentFoods.length,1);
+    assert.equal(first.body.report_data.frequentFoods[0].name,'현미밥');
+    assert.equal(first.body.snapshot.recent30.exerciseDays,1);
+    assert.equal(first.body.snapshot.recent30.alcoholDays,1);
+    assert.equal(conditionReportRows.length,1);
+    assert.equal(writes.find(w=>w.table==='condition_reports').values.condition_key,'gout');
+
+    nextAiData={status:'stable',headline:'두 번째 분석',summary:'새 분석',comparison:'지난 저장 분석과 비교했습니다.',frequentFoods:[],positiveHabits:[],cautionHabits:[],nextActions:[]};
+    const second=await request('conditionReport',{conditionLabel:'통풍'});
+    assert.match(second.prompt,/이전 저장 분석/);
+    assert.match(second.prompt,/음주 습관을 먼저 줄일 때입니다/);
+    assert.equal(conditionReportRows.length,2,'each run must append history rather than overwrite');
+  });
+  await test('history query failure degrades explicitly without stopping record save',async()=>{
+    failHistory=true;
+    try {
+      const {prompt}=await request('analyze',{type:'biometrics',category:'생체기록',date:'2026-09-30',time:'10:00',biometrics:{weight:68}});
+      assert.match(prompt,/과거 생체 기록 조회 실패/);
+      assert.equal(writes.length,1);
+    } finally {failHistory=false;}
+  });
+  await test('profile approval guard still rejects unauthorized AI calls',async()=>{
+    approved=false; prompts=[];
+    try {
+      const response=await handler(new Request('https://example.invalid/',{method:'POST',body:'{}'}));
+      assert.equal(response.status,403);
+      assert.equal(prompts.length,0);
+    } finally {approved=true;}
+  });
+  console.log(passed+' scenario groups passed; external AI and database writes were mocked.');
+})().catch(e=>{console.error(e);process.exitCode=1;});
+
