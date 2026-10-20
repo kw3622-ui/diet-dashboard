@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 48159)
-Total output lines: 3024
-
 <!DOCTYPE html>
 <html>
 <head>
@@ -1161,7 +1158,1080 @@ Total output lines: 3024
       };
 
       // ★ 기록 저장/재분석 (구글 앱스스크립트 대신 Supabase Edge Function 호출)
-      // …18159 tokens truncated…t ? latestBiometrics.dates.weight.slice(5).replace('-', '.') : '날짜없음'}</span>}
+      // ★ AI 응답을 기다리다가 사용자가 직접 취소하는 경우 — 실제 진행 중인 요청을 중단하고 로딩 상태를 정리
+      const handleCancelLoading = () => {
+        if (abortControllerRef.current) abortControllerRef.current.abort();
+        setIsAnalyzing(false);
+        setReanalyzingId(null);
+        setIsGeneratingReport(false);
+        setIsGeneratingDaily(false);
+        setIsGeneratingConditionReport(false);
+        setSysError("");
+        showNotice('요청을 취소했습니다.');
+      };
+
+      // ★ 사진/한줄기록 분석 결과에 대한 후속 질문 (기록당 1회, 서버에서도 재확인함)
+      const handleAskFollowup = async (logId) => {
+        const q = followupDraft.trim();
+        if (!q) return;
+        setSubmittingFollowupId(logId);
+        try {
+          const res = await callAI('followupQuestion', { id: logId, question: q, disease: profile?.disease || '', aiMode: profile?.aiMode || 'normal' });
+          const applyAnswer = (item) => item.id === logId ? { ...item, followupQuestion: res.question, followupAnswer: res.answer } : item;
+          setLogs(prev => prev.map(applyAnswer));
+          setPeriodLogs(prev => prev.map(applyAnswer));
+          setOpenFollowupId(null);
+          setFollowupDraft('');
+        } catch (err) {
+          reportFatalError(err);
+        } finally {
+          setSubmittingFollowupId(null);
+        }
+      };
+
+      const handleUploadConfirm = () => {
+        if (draft.type === 'text' && !draft.naturalText.trim()) return setSysError("내용을 입력해주세요!");
+        if (draft.type === 'biometrics' && !draft.bp_sys && !draft.bp_dia && !draft.pulse && !draft.sugar && !draft.weight && !draft.sleep_hours) return setSysError("최소 하나 이상의 수치를 입력해주세요!");
+
+        const finalCategory = draft.type === 'biometrics' ? '생체기록' : (draft.category === '직접입력' ? (customCategory || '기타') : draft.category);
+
+        const payload = {
+          type: draft.type, base64Images: Array.isArray(draft.data) ? draft.data : [draft.data].filter(Boolean),
+          naturalText: draft.naturalText, memo: draft.memo, date: draft.editDate, time: draft.editTime, category: finalCategory,
+          biometrics: draft.type === 'biometrics' ? { bp_sys: draft.bp_sys ? Number(draft.bp_sys) : null, bp_dia: draft.bp_dia ? Number(draft.bp_dia) : null, pulse: draft.pulse ? Number(draft.pulse) : null, sugar: draft.sugar ? Number(draft.sugar) : null, weight: draft.weight ? Number(draft.weight) : null, sleep_hours: draft.sleep_hours ? Number(draft.sleep_hours) : null } : null,
+          disease: profile?.disease || '',
+          aiMode: profile?.aiMode || 'normal',
+          existingFoodName: draft.existingFoodName, existingIngredients: draft.existingIngredients
+        };
+        const isEdit = draft.isEditMode; const editId = draft.editLogId;
+
+        setDraft({ isOpen: false, isEditMode: false, type: '', data: [], naturalText: '', memo: '', category: '', bp_sys: '', bp_dia: '', pulse: '', sugar: '', weight: '', sleep_hours: '', existingFoodName: '', existingIngredients: [] });
+        setSysError("");
+        nudgeViewportRepaint(); // ★ [버그수정] 메인화면 복귀 직후 터치 좌표 어긋남 방지
+
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+
+        // ★ 사용자가 직접 취소하지 않아도, 요청이 지나치게 오래 걸리면(90초) 안전장치로 강제 중단
+        const timeoutId = setTimeout(() => {
+          controller.abort();
+          if (isEdit) setReanalyzingId(null); else setIsAnalyzing(false);
+          reportFatalError('서버 통신이 지연되고 있습니다.');
+        }, 90000);
+
+        (async () => {
+          try {
+            if (isEdit) {
+              setReanalyzingId(editId);
+              const newData = await callAI('reanalyze', { id: editId, ...payload }, controller.signal);
+              clearTimeout(timeoutId);
+              if (newData.date !== currentDate && activeTab === 'home') setLogs(prev => prev.filter(item => item.id !== editId));
+              else setLogs(prev => prev.map(item => item.id === editId ? { ...item, ...newData } : item));
+              setFeedbackPopupLog(newData);
+              await clearMealStatusForCategory(finalCategory, newData.date);
+              setReanalyzingId(null);
+              if (finalCategory !== '운동' && finalCategory !== '생체기록') fetchFrequentFoods();
+              fetchGoalStats();
+            } else {
+              setIsAnalyzing(true);
+              const newLog = await callAI('analyze', payload, controller.signal);
+              clearTimeout(timeoutId);
+              if (newLog.date === currentDate && activeTab === 'home') setLogs(prev => [newLog, ...prev]);
+              setFeedbackPopupLog(newLog);
+              await clearMealStatusForCategory(finalCategory, newLog.date);
+              setIsAnalyzing(false);
+              if (finalCategory !== '운동' && finalCategory !== '생체기록') fetchFrequentFoods();
+              fetchGoalStats();
+            }
+            if (activeTab === 'stats') await fetchPeriodLogs(activeRange.start, activeRange.end);
+          } catch (err) {
+            clearTimeout(timeoutId);
+            if (err.name === 'AbortError') return; // 사용자가 취소했거나 위 안전장치로 중단된 경우 — 상태는 이미 정리됨
+            reportFatalError(err);
+            if (isEdit) setReanalyzingId(null); else setIsAnalyzing(false);
+          }
+        })();
+      };
+
+      // ★ 기록 삭제 (본인 스토리지 폴더의 이미지까지 함께 정리)
+      const executeDelete = async (id) => {
+        const prevLogs = [...logs]; setLogs(logs.filter(log => log.id !== id));
+        setDeleteConfirmId(null);
+        try {
+          const target = prevLogs.find(l => l.id === id);
+          if (target && target.imageUrl) {
+            const marker = '/diet-images/';
+            const paths = target.imageUrl.split(',').filter(Boolean).map(url => {
+              const idx = url.indexOf(marker);
+              return idx >= 0 ? url.slice(idx + marker.length) : null;
+            }).filter(Boolean);
+            if (paths.length) await sb.storage.from('diet-images').remove(paths);
+          }
+          const { error } = await sb.from('logs').delete().eq('id', id);
+          if (error) throw error;
+        } catch (err) {
+          reportFatalError(err); setLogs(prevLogs);
+        }
+      };
+
+      const handleGeneratePeriodReport = () => {
+        if(periodLogs.length === 0) return setSysError("분석할 기록이 없습니다.");
+        setIsGeneratingReport(true);
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+        // ★ 사용자가 직접 취소하지 않아도, 요청이 지나치게 오래 걸리면(90초) 안전장치로 강제 중단
+        const timeoutId = setTimeout(() => {
+          controller.abort();
+          setIsGeneratingReport(false);
+          reportFatalError('리포트 생성에 시간이 오래 걸립니다.');
+        }, 90000);
+
+        let summaryData = "";
+        if (statsMode === 'month') {
+           const avgBio = averageBiometrics(periodLogs.filter(l => l.category === '생체기록'));
+           const foods = periodLogs.filter(l => l.category !== '생체기록' && l.category !== '운동').map(l => l.foodName).join(', ');
+           const exercises = periodLogs.filter(l => l.category === '운동').map(l => l.foodName).join(', ');
+
+           summaryData = `[${activeRange.label} 패턴 압축 데이터]\n- 해당 기간 주요 식단: ${foods || '없음'}\n- 해당 기간 주요 운동: ${exercises || '없음'}\n- 평균 혈압: ${avgBio.bpSys ?? '기록없음'} / ${avgBio.bpDia ?? '기록없음'}\n- 평균 혈당: ${avgBio.sugar ?? '기록없음'}\n- 평균 체중: ${avgBio.weight !== null ? avgBio.weight.toFixed(1) + 'kg' : '기록없음'}\n- 평균 수면 시간: ${avgBio.sleep !== null ? avgBio.sleep.toFixed(1) + '시간' : '기록없음'}\n위 압축 데이터를 바탕으로 전반적인 생활 패턴의 장점과 개선점을 의학/영양학적으로 코칭해주세요.`;
+        } else {
+           let summaryLines = periodLogs.map(l => {
+             if (l.category === '생체기록') return `[${l.date} ${l.time}] 생체: ${Array.isArray(l.ingredients) ? l.ingredients.join(', ') : l.ingredients}`;
+             return `[${l.date} ${l.time}] [${l.category}] ${l.foodName}: ${Array.isArray(l.ingredients) ? l.ingredients.join(', ') : l.ingredients}`;
+           });
+           summaryData = `[${activeRange.label} 전체 내역 (시간순)]\n` + summaryLines.join('\n');
+        }
+
+        (async () => {
+          try {
+            const res = await callAI('periodReport', { periodStart: activeRange.start, summaryData, isMonth: statsMode === 'month', disease: profile?.disease, aiMode: profile?.aiMode || 'normal' }, controller.signal);
+            clearTimeout(timeoutId); setAiReport(res); setIsGeneratingReport(false);
+          } catch (err) {
+            clearTimeout(timeoutId);
+            if (err.name === 'AbortError') return;
+            reportFatalError(err); setIsGeneratingReport(false);
+          }
+        })();
+      };
+
+      const handleGenerateConditionReport = () => {
+        if (!selectedCondition || isGeneratingConditionReport) return;
+        setIsGeneratingConditionReport(true);
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+        const timeoutId = setTimeout(() => {
+          controller.abort();
+          setIsGeneratingConditionReport(false);
+          reportFatalError('기저질환 분석에 시간이 오래 걸립니다.');
+        }, 90000);
+
+        (async () => {
+          try {
+            const res = await callAI('conditionReport', { conditionLabel: selectedCondition }, controller.signal);
+            clearTimeout(timeoutId);
+            const mapped = mapConditionReport(res);
+            setConditionReports(prev => [mapped, ...prev]);
+            setIsGeneratingConditionReport(false);
+          } catch (err) {
+            clearTimeout(timeoutId);
+            if (err.name === 'AbortError') return;
+            reportFatalError(err);
+            setIsGeneratingConditionReport(false);
+          }
+        })();
+      };
+
+      const handleGenerateDailyReport = () => {
+        if(logs.length === 0) return setSysError("분석할 기록이 없습니다. 먼저 기록해주세요.");
+        setIsGeneratingDaily(true);
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+        // ★ 사용자가 직접 취소하지 않아도, 요청이 지나치게 오래 걸리면(90초) 안전장치로 강제 중단
+        const timeoutId = setTimeout(() => {
+          controller.abort();
+          setIsGeneratingDaily(false);
+          reportFatalError('하루 평가 통신이 지연되고 있습니다.');
+        }, 90000);
+
+        let summaryLines = logs.map(l => {
+          if (l.category === '생체기록') return `[${l.time}] 생체: ${Array.isArray(l.ingredients) ? l.ingredients.join(', ') : l.ingredients}`;
+          return `[${l.time}] [${l.category}] ${l.foodName}: ${Array.isArray(l.ingredients) ? l.ingredients.join(', ') : l.ingredients}`;
+        });
+        const summaryData = `기록 내역 (시간순):\n` + summaryLines.join('\n');
+
+        (async () => {
+          try {
+            const res = await callAI('dailyReport', { date: currentDate, summaryData, disease: profile?.disease, aiMode: profile?.aiMode || 'normal' }, controller.signal);
+            clearTimeout(timeoutId); setDailyReport(res); setIsGeneratingDaily(false);
+          } catch (err) {
+            clearTimeout(timeoutId);
+            if (err.name === 'AbortError') return;
+            reportFatalError(err); setIsGeneratingDaily(false);
+          }
+        })();
+      };
+
+      // ★ 마크다운 리포트 예쁘게 렌더링하는 함수 (카드형 UI)
+      const renderReportHtml = (text) => {
+        if (!text) return null;
+        const sections = text.split('##').filter(s => s.trim() !== '');
+
+        return sections.map((section, idx) => {
+          const lines = section.trim().split('\n');
+          const title = lines[0].replace(/\*\*/g, '').trim();
+          const contentLines = lines.slice(1).join('\n').trim();
+
+          const renderContent = (contentStr) => {
+             const parts = contentStr.split(/(\*\*.*?\*\*)/g);
+             return parts.map((part, i) => {
+               if (part.startsWith('**') && part.endsWith('**')) {
+                 return <strong key={i} className="text-blue-700 font-extrabold">{part.slice(2, -2)}</strong>;
+               }
+               return <span key={i}>{part}</span>;
+             });
+          };
+
+          return (
+            <div key={idx} className="bg-white rounded-2xl p-5 mb-4 shadow-sm border border-gray-100">
+              <h4 className="text-lg font-extrabold text-gray-800 mb-3 border-b-2 border-gray-100 pb-2 flex items-center gap-2">
+                {title}
+              </h4>
+              <div className="text-gray-600 leading-relaxed text-[15px] whitespace-pre-wrap break-keep">
+                {renderContent(contentLines)}
+              </div>
+            </div>
+          );
+        });
+      };
+
+      const getGradeColor = (grade) => {
+        if(grade === 'A') return 'bg-blue-500'; if(grade === 'B') return 'bg-green-500'; if(grade === 'C') return 'bg-yellow-500'; if(grade === 'D') return 'bg-orange-500'; return 'bg-red-500';
+      };
+
+      const getDaysArray = () => {
+        if (!activeRange.start || !activeRange.end) return [];
+        const start = parseDate(activeRange.start);
+        const end = parseDate(activeRange.end);
+        const diffTime = Math.abs(end - start);
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+        return Array.from({length: diffDays});
+      };
+
+      const getChartDays = () => {
+        if (statsMode === 'week') {
+          return getDaysArray().map((_, i) => {
+            const d = parseDate(activeRange.start); d.setDate(d.getDate() + i); return formatDate(d);
+          });
+        } else {
+          const bioDates = new Set();
+          periodLogs.forEach(l => {
+            try {
+              if (l.category === '생체기록') {
+                const raw = JSON.parse(l.rawInput);
+                if (raw.biometrics?.bp_sys || raw.biometrics?.bp_dia || raw.biometrics?.sugar || raw.biometrics?.weight || raw.biometrics?.sleep_hours) bioDates.add(l.date);
+              }
+            } catch(e) {}
+          });
+          return Array.from(bioDates).sort();
+        }
+      };
+
+      const chartDays = getChartDays();
+
+      // ★ 생체 트렌드: 실제 기록과 기준선을 포함한 자동 세로축을 사용한다.
+      // 최소 범위를 보장해 작은 차이를 과장하지 않고, 위쪽에는 상시 수치 라벨 공간을 남긴다.
+      const validBioValue = (value) => {
+        const number = Number(value);
+        return value !== null && value !== undefined && value !== '' && Number.isFinite(number) && number >= 0 ? number : null;
+      };
+      const getBioSeries = (field) => chartDays.map(dateStr => {
+        const dayLogs = periodLogs.filter(l => l.date === dateStr && l.category === '생체기록');
+        let sum = 0, count = 0;
+        dayLogs.forEach(l => {
+          try {
+            const raw = JSON.parse(l.rawInput);
+            const value = validBioValue(raw.biometrics?.[field]);
+            if (value !== null) { sum += value; count++; }
+          } catch(e) {}
+        });
+        return { dateStr, avg: count ? sum / count : null };
+      });
+      const bpSeries = chartDays.map(dateStr => {
+        const dayLogs = periodLogs.filter(l => l.date === dateStr && l.category === '생체기록');
+        let sysSum = 0, diaSum = 0, count = 0;
+        dayLogs.forEach(l => {
+          try {
+            const raw = JSON.parse(l.rawInput);
+            const sys = validBioValue(raw.biometrics?.bp_sys);
+            const dia = validBioValue(raw.biometrics?.bp_dia);
+            if (sys !== null && dia !== null) { sysSum += sys; diaSum += dia; count++; }
+          } catch(e) {}
+        });
+        return { dateStr, sys: count ? Math.round(sysSum / count) : null, dia: count ? Math.round(diaSum / count) : null, count };
+      });
+      const sugarSeries = getBioSeries('sugar').map(item => ({...item, avg: item.avg !== null ? Math.round(item.avg) : null}));
+      const weightSeries = getBioSeries('weight');
+      const sleepSeries = getBioSeries('sleep_hours');
+
+      const makeAdaptiveScale = (values, references, minimumSpan) => {
+        const all = [...values, ...references].map(Number).filter(v => Number.isFinite(v) && v >= 0);
+        if (all.length === 0) return { lo: 0, hi: minimumSpan, position: () => 92 };
+        const min = Math.min(...all), max = Math.max(...all);
+        const span = Math.max(minimumSpan, (max - min) * 1.25 || minimumSpan);
+        const center = (min + max) / 2;
+        let lo = center - span / 2, hi = center + span / 2;
+        if (lo < 0) { hi -= lo; lo = 0; }
+        return {
+          lo, hi,
+          position: value => Math.max(16, Math.min(92, ((hi - Number(value)) / (hi - lo)) * 100))
+        };
+      };
+
+      // 가까운 값의 배지가 겹치지 않도록 날짜별로 위·아래 위치를 엇갈리게 한다.
+      // 그래프 경계에 가까우면 카드 밖이나 날짜 영역으로 밀리지 않는 방향으로 자동 전환한다.
+      const getTrendLabelTop = (position, index) => {
+        if (position <= 28) return `calc(${position}% + ${index % 2 === 0 ? 6 : 36}px)`;
+        if (position >= 72) return `calc(${position}% - ${index % 2 === 0 ? 18 : 48}px)`;
+        return index % 2 === 0 ? `calc(${position}% - 20px)` : `calc(${position}% + 10px)`;
+      };
+
+      const activePeriodGoal = periodGoal?.status === 'active' ? periodGoal : null;
+      const bpValues = bpSeries.flatMap(item => item.sys !== null ? [item.sys, item.dia] : []);
+      const sugarValues = sugarSeries.map(item => item.avg).filter(v => v !== null);
+      const weightValues = weightSeries.map(w => w.avg).filter(v => v !== null);
+      const sleepValues = sleepSeries.map(item => item.avg).filter(v => v !== null);
+      const bpScale = makeAdaptiveScale(bpValues, [80, 120, activePeriodGoal?.bp_sys_target, activePeriodGoal?.bp_dia_target].filter(Boolean), 60);
+      const sugarScale = makeAdaptiveScale(sugarValues, [100, 126, activePeriodGoal?.sugar_target].filter(Boolean), 40);
+      const weightScale = makeAdaptiveScale(weightValues, [activePeriodGoal?.weight_target].filter(Boolean), 4);
+      const sleepScale = makeAdaptiveScale(sleepValues, [7], 4);
+      const weightLo = weightScale.lo;
+      const weightHi = weightScale.hi;
+
+      // ★ 음주/야식 캘린더(월간)용 날짜 셀 계산 (앞쪽 빈 칸 포함, 요일 정렬)
+      const getMonthCalendarCells = () => {
+        if (!activeRange.start || !activeRange.end) return [];
+        const startD = parseDate(activeRange.start);
+        const endD = parseDate(activeRange.end);
+        const firstWeekday = startD.getDay();
+        const totalDays = endD.getDate();
+        const cells = [];
+        for (let i = 0; i < firstWeekday; i++) cells.push(null);
+        for (let day = 1; day <= totalDays; day++) {
+          cells.push(formatDate(new Date(startD.getFullYear(), startD.getMonth(), day)));
+        }
+        return cells;
+      };
+      const monthCalendarCells = statsMode === 'month' ? getMonthCalendarCells() : [];
+
+      // ★ 일별 평가등급 추이 그래프용 날짜 목록 (주간: 7일 전체, 월간: 등급 기록이 있는 날만)
+      const gradeChartDays = statsMode === 'week'
+        ? getDaysArray().map((_, i) => { const d = parseDate(activeRange.start); d.setDate(d.getDate() + i); return formatDate(d); })
+        : periodGrades.map(g => g.report_date);
+      const gradeRank = { A: 5, B: 4, C: 3, D: 2, F: 1 };
+
+      const alcoholGoal = getAlcoholGoalProgress(
+        activeRange.start, activeRange.end, formatDate(new Date()),
+        periodLogs, periodGoal?.status === 'active' ? periodGoal.alcohol_free_target : 0
+      );
+
+      const exerciseDaysThisPeriod = new Set(periodLogs.filter(l => l.category === '운동').map(l => l.date)).size;
+      const periodDaysCount = activeRange.start && activeRange.end
+        ? Math.round((parseDate(activeRange.end) - parseDate(activeRange.start)) / 86400000) + 1
+        : 7;
+      const exerciseGoalTarget = periodGoal?.status === 'active' ? Number(periodGoal.exercise_target) || 0 : 0;
+
+      const selectedConditionKey = conditionKeyForLabel(selectedCondition);
+      const selectedConditionHistory = conditionReports.filter(report => report.conditionKey === selectedConditionKey);
+      const latestConditionReport = selectedConditionHistory[0] || null;
+      const latestConditionData = latestConditionReport?.reportData || null;
+      const conditionStatusMeta = {
+        improving: { label: '좋아지는 흐름', color: 'bg-emerald-100 text-emerald-700' },
+        stable: { label: '비슷한 흐름', color: 'bg-blue-100 text-blue-700' },
+        needs_attention: { label: '주의가 필요해요', color: 'bg-amber-100 text-amber-800' },
+        insufficient: { label: '기록이 더 필요해요', color: 'bg-gray-100 text-gray-600' },
+      };
+
+      const hasAnyGoal = !!(activePeriodGoal && [activePeriodGoal.exercise_target, activePeriodGoal.alcohol_free_target,
+        activePeriodGoal.weight_target, activePeriodGoal.bp_sys_target, activePeriodGoal.bp_dia_target,
+        activePeriodGoal.sugar_target].some(value => Number(value) > 0));
+
+      const HealthTagSummary = ({ items, title }) => {
+        const summary = summarizeHealthTags(items);
+        if (!summary.length) return null;
+        return (
+          <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100" data-health-tag-summary>
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <div>
+                <h3 className="font-bold text-gray-800">🧭 {title}</h3>
+                <p className="text-[11px] text-gray-400 mt-0.5">근거가 확인된 기록만 모았어요</p>
+              </div>
+              <span className="text-[11px] font-bold text-gray-500 bg-gray-100 px-2 py-1 rounded-lg whitespace-nowrap">총 {summary.reduce((sum, item) => sum + item.count, 0)}건</span>
+            </div>
+            <div className="grid grid-cols-1 gap-2">
+              {summary.slice(0, 6).map(item => (
+                <div key={`${item.label}-${item.polarity}`} className={`rounded-2xl px-3 py-2.5 border ${item.polarity === 'helpful' ? 'bg-emerald-50 border-emerald-100' : 'bg-amber-50 border-amber-100'}`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className={`text-xs font-bold whitespace-nowrap ${item.polarity === 'helpful' ? 'text-emerald-700' : 'text-amber-800'}`}>{item.polarity === 'helpful' ? '✓' : '!'} {item.label}</span>
+                    <span className="text-[11px] font-bold text-gray-500 whitespace-nowrap">{item.count}회</span>
+                  </div>
+                  {item.foods.size > 0 && <p className="text-[11px] text-gray-500 mt-1 truncate">{[...item.foods].slice(0, 3).join(' · ')}</p>}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      };
+
+      // ★ 로그인 / 회원가입 화면 (기존 최초 온보딩 폼 대체)
+      const AuthForm = () => (
+        <div className="w-full max-w-sm mx-auto">
+          <div className="text-center mb-8"><span className="text-5xl">💪</span><h1 className="text-2xl font-bold mt-4 text-gray-800">나만의 건강 비서</h1></div>
+          <div className="flex gap-2 mb-6 bg-gray-100 p-1 rounded-xl">
+            <button type="button" onClick={() => { setAuthMode('login'); setAuthError(''); }} className={`flex-1 py-2 text-sm font-bold rounded-lg transition ${authMode === 'login' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500'}`}>로그인</button>
+            <button type="button" onClick={() => { setAuthMode('signup'); setAuthError(''); }} className={`flex-1 py-2 text-sm font-bold rounded-lg transition ${authMode === 'signup' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500'}`}>회원가입</button>
+          </div>
+          <form onSubmit={handleAuthSubmit} className="space-y-4">
+            <div>
+              <label className="text-sm font-medium text-gray-600 block mb-1">계정명</label>
+              <input type="text" name="username" required autoCapitalize="none" className="w-full border p-3 rounded-xl bg-gray-50 outline-none" placeholder="영문/숫자 계정명" />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-gray-600 block mb-1">비밀번호</label>
+              <input type="password" name="password" required minLength={6} className="w-full border p-3 rounded-xl bg-gray-50 outline-none" placeholder="6자 이상" />
+            </div>
+
+            {authMode === 'signup' && (
+              <div className="grid grid-cols-2 gap-4 pt-3 border-t border-gray-100">
+                <div><label className="text-sm font-medium text-gray-600 block mb-1">성별</label><select name="gender" defaultValue="male" className="w-full border p-3 rounded-xl bg-gray-50 outline-none"><option value="male">남성</option><option value="female">여성</option></select></div>
+                <div><label className="text-sm font-medium text-gray-600 block mb-1">나이</label><input type="number" name="age" defaultValue={30} className="w-full border p-3 rounded-xl bg-gray-50 outline-none" /></div>
+                <div><label className="text-sm font-medium text-gray-600 block mb-1">키(cm)</label><input type="number" name="height" defaultValue={170} className="w-full border p-3 rounded-xl bg-gray-50 outline-none" /></div>
+                <div><label className="text-sm font-medium text-gray-600 block mb-1">체중(kg)</label><input type="number" name="weight" defaultValue={70} className="w-full border p-3 rounded-xl bg-gray-50 outline-none" /></div>
+                <div className="col-span-2">
+                  <label className="text-sm font-medium text-gray-600 block mb-1">관리 중인 기저질환 (선택)</label>
+                  <input type="text" name="disease" placeholder="예: 당뇨, 고혈압, 통풍 등" className="w-full border p-3 rounded-xl bg-gray-50 outline-none text-sm placeholder-gray-400" />
+                </div>
+                <div className="col-span-2">
+                  <label className="text-sm font-bold text-gray-600 block mb-1">AI 코칭 스타일</label>
+                  <select name="aiMode" defaultValue="normal" className="w-full border p-3 rounded-xl bg-blue-50 outline-none text-sm font-bold text-gray-700">
+                    <option value="normal">⚖️ 프로 코치 (객관적 사실과 대안 제시)</option>
+                    <option value="sparta">🔥 스파르타 (변명 불가! 강력한 팩트 폭격)</option>
+                    <option value="angel">👼 천사 멘토 (따뜻한 위로와 부드러운 권유)</option>
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {authError && <p className="text-sm text-red-600 font-bold text-center">{authError}</p>}
+
+            <button type="submit" disabled={authLoading} className="w-full bg-blue-600 text-white py-4 rounded-xl text-lg font-bold shadow-lg mt-2 disabled:opacity-60">
+              {authLoading ? '처리 중...' : (authMode === 'signup' ? '가입하고 시작하기' : '로그인')}
+            </button>
+          </form>
+        </div>
+      );
+
+      // ★ 내 정보 수정 (계정명/비밀번호 변경 + 로그아웃 포함, 기존 SettingsForm 대체)
+      const SettingsForm = () => (
+        <div className="w-full max-w-sm mx-auto">
+          <div className="text-center mb-8"><span className="text-5xl">💪</span><h1 className="text-2xl font-bold mt-4 text-gray-800">내 정보 수정</h1></div>
+          <form onSubmit={saveProfile} className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="col-span-2">
+                <label className="text-sm font-medium text-gray-600 block mb-1">계정명</label>
+                <input type="text" name="username" defaultValue={profile?.username || ''} autoCapitalize="none" className="w-full border p-3 rounded-xl bg-gray-50 outline-none" />
+              </div>
+              <div className="col-span-2">
+                <label className="text-sm font-medium text-gray-600 block mb-1">새 비밀번호 (변경할 때만 입력)</label>
+                <input type="password" name="newPassword" minLength={6} placeholder="변경하지 않으려면 비워두세요" className="w-full border p-3 rounded-xl bg-gray-50 outline-none" />
+              </div>
+              <div><label className="text-sm font-medium text-gray-600 block mb-1">성별</label><select name="gender" defaultValue={profile?.gender || 'male'} className="w-full border p-3 rounded-xl bg-gray-50 outline-none"><option value="male">남성</option><option value="female">여성</option></select></div>
+              <div><label className="text-sm font-medium text-gray-600 block mb-1">나이</label><input type="number" name="age" defaultValue={profile?.age || 30} className="w-full border p-3 rounded-xl bg-gray-50 outline-none" /></div>
+              <div><label className="text-sm font-medium text-gray-600 block mb-1">키(cm)</label><input type="number" name="height" defaultValue={profile?.height || 170} className="w-full border p-3 rounded-xl bg-gray-50 outline-none" /></div>
+              <div><label className="text-sm font-medium text-gray-600 block mb-1">체중(kg)</label><input type="number" name="weight" defaultValue={profile?.weight || 70} className="w-full border p-3 rounded-xl bg-gray-50 outline-none" /></div>
+              <div className="col-span-2">
+                <label className="text-sm font-medium text-gray-600 block mb-1">관리 중인 기저질환 (선택)</label>
+                <input type="text" name="disease" defaultValue={profile?.disease || ""} placeholder="예: 당뇨, 고혈압, 통풍 등" className="w-full border p-3 rounded-xl bg-gray-50 outline-none text-sm placeholder-gray-400" />
+              </div>
+              <div className="col-span-2">
+                <label className="text-sm font-bold text-gray-600 block mb-1">AI 코칭 스타일</label>
+                <select name="aiMode" defaultValue={profile?.aiMode || 'normal'} className="w-full border p-3 rounded-xl bg-blue-50 outline-none text-sm font-bold text-gray-700 focus:border-blue-500">
+                  <option value="normal">⚖️ 프로 코치 (객관적 사실과 대안 제시)</option>
+                  <option value="sparta">🔥 스파르타 (변명 불가! 강력한 팩트 폭격)</option>
+                  <option value="angel">👼 천사 멘토 (따뜻한 위로와 부드러운 권유)</option>
+                </select>
+                <p className="text-xs text-gray-400 mt-1">기분에 따라 나를 대하는 AI의 피드백 톤을 조절해보세요.</p>
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-gray-100">
+              <h3 className="text-sm font-bold text-gray-700 mb-3">🎯 목표 설정 (선택, 비워두면 목표 없음)</h3>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs font-medium text-gray-500 block mb-1">주당 운동 목표(회)</label>
+                  <input type="number" min="0" name="goalExerciseWeekly" defaultValue={profile?.goalExerciseWeekly || ''} placeholder="예: 3" className="w-full border p-3 rounded-xl bg-gray-50 outline-none text-sm" />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-500 block mb-1">주간 금주 목표(일)</label>
+                  <input type="number" min="0" max="7" step="1" name="goalAlcoholFreeWeekly" defaultValue={profile?.goalAlcoholFreeWeekly ?? ''} placeholder="예: 4" className="w-full border p-3 rounded-xl bg-gray-50 outline-none text-sm" />
+                </div>
+                <div className="col-span-2">
+                  <label className="text-xs font-medium text-gray-500 block mb-1">목표 체중(kg)</label>
+                  <input type="number" step="0.1" name="goalWeightKg" defaultValue={profile?.goalWeightKg || ''} placeholder="예: 65" className="w-full border p-3 rounded-xl bg-gray-50 outline-none text-sm" />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-500 block mb-1">목표 혈압 상한(수축기)</label>
+                  <input type="number" name="goalBpSysMax" defaultValue={profile?.goalBpSysMax || ''} placeholder="예: 120" className="w-full border p-3 rounded-xl bg-gray-50 outline-none text-sm" />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-500 block mb-1">목표 혈압 상한(이완기)</label>
+                  <input type="number" name="goalBpDiaMax" defaultValue={profile?.goalBpDiaMax || ''} placeholder="예: 80" className="w-full border p-3 rounded-xl bg-gray-50 outline-none text-sm" />
+                </div>
+                <div className="col-span-2">
+                  <label className="text-xs font-medium text-gray-500 block mb-1">목표 공복혈당 상한(mg/dL)</label>
+                  <input type="number" name="goalSugarMax" defaultValue={profile?.goalSugarMax || ''} placeholder="예: 100" className="w-full border p-3 rounded-xl bg-gray-50 outline-none text-sm" />
+                </div>
+              </div>
+            </div>
+
+            {accountError && <p className="text-sm text-red-600 font-bold text-center">{accountError}</p>}
+            <button type="submit" disabled={accountSaving} className="w-full bg-blue-600 text-white py-4 rounded-xl text-lg font-bold shadow-lg mt-6 disabled:opacity-60">{accountSaving ? '저장 중...' : '저장하기'}</button>
+            <button type="button" onClick={() => setIsSettingsOpen(false)} className="w-full bg-gray-200 text-gray-700 py-3 rounded-xl font-bold mt-2">취소</button>
+          </form>
+
+          <div className="pt-4 mt-4 border-t border-gray-100">
+            <h3 className="text-sm font-bold text-gray-700 mb-1">📦 데이터 백업</h3>
+            <p className="text-xs text-gray-400 mb-3">지금까지 기록한 전체 식단·운동·생체기록을 CSV 파일로 내려받습니다.</p>
+            <button type="button" disabled={isExporting} onClick={handleExportCsv} className="w-full bg-gray-100 text-gray-700 py-3 rounded-xl font-bold disabled:opacity-60">
+              {isExporting ? '내보내는 중...' : '📥 CSV로 내보내기'}
+            </button>
+          </div>
+
+          <button type="button" onClick={handleLogout} className="w-full bg-red-50 text-red-600 py-3 rounded-xl font-bold mt-4">로그아웃</button>
+        </div>
+      );
+
+      // ★ 관리자 전용 회원관리 패널 (승인 대기/전체 회원 목록 + 승인·차단 토글)
+      const AdminPanel = () => (
+        <div className="w-full max-w-md mx-auto">
+          <div className="flex justify-between items-center mb-6">
+            <h1 className="text-xl font-bold text-gray-800">👑 회원관리</h1>
+            <button onClick={() => setIsAdminOpen(false)} className="text-sm bg-gray-100 text-gray-600 px-3 py-1.5 rounded-lg font-bold">닫기</button>
+          </div>
+          {isLoadingMembers ? (
+            <div className="flex justify-center py-10"><div className="loader"></div></div>
+          ) : (
+            <div className="space-y-3">
+              {memberList.length === 0 && <p className="text-center text-gray-400 py-10">가입한 회원이 없습니다.</p>}
+              {memberList.map(m => (
+                <div key={m.id} className="bg-white border border-gray-100 rounded-2xl p-4 flex items-center justify-between shadow-sm">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-gray-800 truncate">{m.username}</span>
+                      {m.is_admin && <span className="text-[10px] bg-indigo-100 text-indigo-700 font-bold px-1.5 py-0.5 rounded">관리자</span>}
+                    </div>
+                    <p className="text-xs text-gray-400 mt-1">{m.created_at ? String(m.created_at).slice(0, 10) : ''} 가입</p>
+                    {memberStats[m.id] ? (
+                      <p className="text-xs text-blue-600 mt-1 font-medium">
+                        최근 {Math.max(0, Math.round((parseDate(formatDate(new Date())) - parseDate(memberStats[m.id].last_log_date)) / 86400000))}일 전 활동 · 최근 30일 {memberStats[m.id].active_days_30d}일 기록 · 총 {memberStats[m.id].total_logs}건
+                      </p>
+                    ) : (
+                      <p className="text-xs text-gray-300 mt-1">기록 없음</p>
+                    )}
+                  </div>
+                  {m.is_admin ? (
+                    <span className="text-xs font-bold text-gray-400 px-3 py-2">-</span>
+                  ) : deleteMemberConfirmId === m.id ? (
+                    <div className="flex gap-1 items-center bg-red-50 px-2 py-1 rounded-lg shrink-0">
+                      <span className="text-[10px] text-red-600 font-bold mr-1">삭제?</span>
+                      <button disabled={memberActionId === m.id} onClick={() => handleDeleteMember(m)} className="text-white bg-red-500 hover:bg-red-600 px-2 py-1 rounded text-xs font-bold disabled:opacity-50">네</button>
+                      <button onClick={() => setDeleteMemberConfirmId(null)} className="text-gray-600 bg-gray-200 hover:bg-gray-300 px-2 py-1 rounded text-xs font-bold">아니오</button>
+                    </div>
+                  ) : (
+                    <div className="flex gap-2 shrink-0">
+                      <button
+                        disabled={memberActionId === m.id}
+                        onClick={() => toggleMemberApproval(m)}
+                        className={`text-xs font-bold px-3 py-2 rounded-lg disabled:opacity-50 ${m.is_approved ? 'bg-red-50 text-red-600' : 'bg-blue-600 text-white'}`}
+                      >
+                        {memberActionId === m.id ? '처리 중...' : (m.is_approved ? '사용 차단' : '승인하기')}
+                      </button>
+                      <button
+                        disabled={memberActionId === m.id}
+                        onClick={() => setDeleteMemberConfirmId(m.id)}
+                        className="text-xs font-bold px-2 py-2 rounded-lg bg-gray-50 text-gray-400 hover:text-red-500 hover:bg-red-50 disabled:opacity-50"
+                      >
+                        🗑️
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+
+      if (session === undefined) {
+        return <div className="min-h-screen flex items-center justify-center bg-white"><div className="loader"></div></div>;
+      }
+
+      if (!session) {
+        return <div className="min-h-screen flex flex-col items-center justify-center p-5 bg-white"><AuthForm /></div>;
+      }
+
+      if (!profile) {
+        return <div className="min-h-screen flex items-center justify-center bg-white"><div className="loader"></div></div>;
+      }
+
+      // ★ 회원가입은 했지만 아직 관리자 승인 전인 경우 (관리자 본인은 자동 승인되어 여기로 오지 않음)
+      if (!profile.isApproved && !profile.isAdmin) {
+        return (
+          <div className="min-h-screen flex flex-col items-center justify-center p-8 bg-white text-center">
+            <span className="text-5xl mb-4">⏳</span>
+            <h1 className="text-xl font-bold text-gray-800 mb-2">가입 승인 대기 중이에요</h1>
+            <p className="text-sm text-gray-500 leading-relaxed mb-8">관리자가 계정을 승인하면 바로 이용하실 수 있어요.<br/>승인 전까지는 기록 작성이나 AI 코칭을 사용할 수 없습니다.</p>
+            <button onClick={handleLogout} className="text-sm bg-gray-100 text-gray-600 px-5 py-3 rounded-xl font-bold">로그아웃</button>
+          </div>
+        );
+      }
+
+      const displayDateStr = currentDate === formatDate(new Date()) ? `오늘 (${getDayStr(currentDate)})` : `${currentDate} (${getDayStr(currentDate)})`;
+      const todayRecordRows = (() => {
+        const mealRows = mealSlotDefinitions.map(slot => {
+          const matches = logs.filter(log => log.category === slot.category).sort((a, b) => a.time.localeCompare(b.time));
+          return {
+            id: `meal-${slot.key}`, kind: 'meal', slot,
+            time: matches[0]?.time || slot.anchorTime, matches,
+            status: matches.length ? 'recorded' : (mealStatuses[slot.key] === 'skipped' ? 'skipped' : 'missing'),
+          };
+        });
+        const extraRows = logs
+          .filter(log => !mealSlotByCategory[log.category])
+          .map(log => ({ id: `log-${log.id}`, kind: 'extra', time: log.time, log }));
+        return [...mealRows, ...extraRows].sort((a, b) => a.time.localeCompare(b.time) || a.id.localeCompare(b.id));
+      })();
+      const displayedPeriodGoalDefaults = periodGoal?.status === 'active' ? periodGoal : periodGoalDefaults();
+
+      return (
+        <div className="min-h-screen pb-nav max-w-lg mx-auto bg-gray-50 shadow-sm relative overflow-hidden">
+
+          {isSettingsOpen && (
+            <div className="fixed inset-0 bg-white z-50 overflow-y-auto overscroll-contain p-5 pb-24 animate-fade-in">
+              <SettingsForm />
+            </div>
+          )}
+
+          {isAdminOpen && (
+            <div className="fixed inset-0 bg-gray-50 z-50 overflow-y-auto p-5 animate-fade-in">
+              <AdminPanel />
+            </div>
+          )}
+
+          <div className="bg-white px-5 py-5 shadow-sm sticky top-0 z-20">
+            <div className="flex justify-between items-center gap-3 mb-5">
+              <h1 className="font-bold text-xl text-gray-800 whitespace-nowrap">{activeTab === 'home' ? '🥗 건강 기록' : '📊 통계'}</h1>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {profile.isAdmin && (
+                  <button type="button" className="text-xs bg-indigo-50 text-indigo-700 px-2.5 py-2 rounded-lg font-bold whitespace-nowrap transition hover:bg-indigo-100" onClick={() => setIsAdminOpen(true)}>
+                    👑 회원관리
+                  </button>
+                )}
+                <button type="button" className="text-xs bg-blue-50 text-blue-700 px-2.5 py-2 rounded-lg font-bold whitespace-nowrap transition hover:bg-blue-100" onClick={() => setIsSettingsOpen(true)}>
+                  ⚙️ 설정
+                </button>
+              </div>
+            </div>
+
+            <div className="flex justify-between items-center bg-gray-50 p-2 rounded-xl border border-gray-200">
+              <button onClick={() => changeDate(-1)} className="p-3 text-gray-500 hover:text-black font-extrabold text-lg">◀</button>
+
+              <div className="relative inline-flex items-center justify-center">
+                 <div className="font-bold text-gray-800 bg-white px-4 py-2 rounded-lg shadow-sm text-sm border border-gray-200 flex items-center gap-2 whitespace-nowrap">
+                   {activeTab === 'home'
+                      ? displayDateStr
+                      : (statsMode === 'month'
+                          ? `${parseDate(currentDate).getFullYear()}년 ${parseDate(currentDate).getMonth() + 1}월`
+                          : getKoreanWeekLabel(currentDate)
+                        )
+                   }
+                   <span className="text-[10px] text-gray-400">▼</span>
+                 </div>
+                 <input
+                  type={activeTab === 'home' ? "date" : (statsMode === 'month' ? "month" : "week")}
+                  value={activeTab === 'home' ? currentDate : (statsMode === 'month' ? currentDate.substring(0,7) : getWeekString(currentDate))}
+                  onChange={handleDatePick}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                />
+              </div>
+
+              <button onClick={() => changeDate(1)} className="p-3 text-gray-500 hover:text-black font-extrabold text-lg">▶</button>
+            </div>
+
+            {activeTab === 'stats' && (
+              <div className="flex gap-2 mt-4 bg-gray-100 p-1 rounded-xl">
+                <button onClick={() => setStatsMode('week')} className={`flex-1 py-2 text-sm font-bold rounded-lg transition ${statsMode === 'week' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}>주간</button>
+                <button onClick={() => setStatsMode('month')} className={`flex-1 py-2 text-sm font-bold rounded-lg transition ${statsMode === 'month' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}>월간</button>
+              </div>
+            )}
+          </div>
+
+          <div className="p-5 space-y-6" onTouchStart={handleContentTouchStart} onTouchEnd={handleContentTouchEnd}>
+
+            {activeTab === 'home' && (
+              <>
+                <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100">
+                  {dailyReport ? (
+                    <div className="flex gap-4 items-center">
+                      <div className={`w-16 h-16 rounded-2xl flex items-center justify-center text-3xl font-black text-white shrink-0 shadow-sm ${getGradeColor(dailyReport.grade)}`}>
+                        {dailyReport.grade}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <h3 className="font-bold text-gray-800 text-sm mb-1">오늘의 AI 맞춤 총평</h3>
+                        <p className="text-sm text-gray-600 leading-snug whitespace-pre-wrap">{dailyReport.comment}</p>
+                        <button onClick={handleGenerateDailyReport} className="text-xs text-blue-500 font-bold mt-2 hover:underline flex items-center gap-1">🔄 다시 평가받기</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button onClick={handleGenerateDailyReport} className="w-full flex items-center justify-center gap-2 bg-indigo-50 text-indigo-600 font-bold py-3 rounded-2xl hover:bg-indigo-100 transition">
+                      <span>✨ 이 날의 AI 하루 총평 받기</span>
+                    </button>
+                  )}
+                </div>
+
+                <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100" data-today-records>
+                  <div className="flex items-center justify-between gap-3 mb-4">
+                    <div>
+                      <h2 className="font-bold text-gray-800">🗓️ 오늘의 기록표</h2>
+                      <p className="text-xs text-gray-400 mt-0.5">안 먹음과 미기록을 구분해요</p>
+                    </div>
+                    {isFetching && <span className="text-xs text-blue-500 font-bold animate-pulse whitespace-nowrap">불러오는 중</span>}
+                  </div>
+                  <div className="space-y-2.5">
+                    {todayRecordRows.map(row => {
+                      if (row.kind === 'extra') {
+                        const isExercise = row.log.category === '운동';
+                        const isBio = row.log.category === '생체기록';
+                        return (
+                          <div key={row.id} className={`flex items-center gap-3 rounded-2xl px-3 py-2.5 ${isExercise ? 'bg-green-50' : (isBio ? 'bg-red-50' : 'bg-amber-50')}`}>
+                            <span className="text-lg shrink-0">{isExercise ? '🏃‍♂️' : (isBio ? '🩺' : (row.log.category === '야식' ? '🌃' : '🍪'))}</span>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="text-sm font-bold text-gray-700 whitespace-nowrap">{row.log.category}</span>
+                                <span className="text-xs text-gray-400 whitespace-nowrap">{row.time}</span>
+                              </div>
+                              <p className="text-xs text-gray-500 truncate">{getRecordedFoodNames(row.log).slice(0, 4).join(' · ') || row.log.foodName}</p>
+                            </div>
+                          </div>
+                        );
+                      }
+                      const { slot, matches, status } = row;
+                      return (
+                        <div key={row.id} className={`flex items-center gap-3 rounded-2xl px-3 py-2.5 border ${status === 'recorded' ? 'bg-blue-50 border-blue-100' : (status === 'skipped' ? 'bg-gray-100 border-gray-200' : 'bg-white border-dashed border-gray-200')}`}>
+                          <span className="text-lg shrink-0">{slot.icon}</span>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="text-sm font-bold text-gray-700 whitespace-nowrap">{slot.label}</span>
+                              <span className={`text-[11px] font-bold whitespace-nowrap ${status === 'recorded' ? 'text-blue-600' : (status === 'skipped' ? 'text-gray-500' : 'text-amber-500')}`}>
+                                {status === 'recorded' ? `${matches.length}회 기록` : (status === 'skipped' ? '안 먹음' : '미기록')}
+                              </span>
+                            </div>
+                            {matches.length > 0 && (
+                              <MealRecordSummary matches={matches} />
+                            )}
+                          </div>
+                          <div className="shrink-0 flex items-center gap-1.5">
+                            <button type="button" onClick={() => openMealDraft(slot)}
+                              aria-label={`${slot.label} ${status === 'recorded' ? '추가 기록' : '기록하기'}`}
+                              className="whitespace-nowrap text-[11px] font-bold px-2.5 py-1.5 rounded-lg bg-blue-600 text-white active:scale-95 transition">
+                              {status === 'recorded' ? '+ 추가' : (status === 'skipped' ? '기록하기' : '기록')}
+                            </button>
+                            {status !== 'recorded' && (
+                              <button type="button" disabled={mealStatusSaving === slot.key} onClick={() => toggleMealSkipped(slot.key)}
+                                className={`whitespace-nowrap text-[11px] font-bold px-2.5 py-1.5 rounded-lg transition disabled:opacity-50 ${status === 'skipped' ? 'bg-white text-gray-500 border border-gray-200' : 'bg-gray-800 text-white'}`}>
+                                {mealStatusSaving === slot.key ? '저장 중' : (status === 'skipped' ? '미기록으로' : '안 먹음')}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-gray-400 mt-3">간식 기록이 없다는 이유만으로 먹지 않았다고 판단하지 않습니다.</p>
+                </div>
+
+                <HealthTagSummary items={logs} title="오늘의 건강 영향" />
+
+                <div className="flex justify-between items-center px-1"><h2 className="font-bold text-lg text-gray-700">타임라인 {isFetching && <span className="text-sm text-blue-500 ml-2 animate-pulse">업데이트 중...</span>}</h2></div>
+
+                {logs.length === 0 && !isFetching && !isAnalyzing && (
+                  <div className="text-center py-16 text-gray-400 bg-white rounded-3xl border-2 border-dashed border-gray-200"><div className="text-5xl mb-3">📝</div><p>아직 기록이 없습니다.</p></div>
+                )}
+
+                {logs.map(log => {
+                  const isEx = log.category === '운동';
+                  const isBio = log.category === '생체기록';
+                  const images = log.imageUrl ? log.imageUrl.split(',') : [];
+
+                  return (
+                    <div key={log.id} className="bg-white p-5 rounded-3xl shadow-sm border border-gray-100 flex gap-4 relative">
+                      <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-2xl shrink-0 ${isEx ? 'bg-green-50' : (isBio ? 'bg-red-50' : (log.isAlcohol ? 'bg-orange-100' : 'bg-orange-50'))}`}>
+                        {isEx ? '🏃‍♂️' : (isBio ? '🩺' : (log.isAlcohol ? '🍺' : '🍽️'))}
+                      </div>
+
+                      <div className="flex-1 min-w-0 flex flex-col justify-start">
+                        <div className="flex justify-between items-start mb-1">
+                          <span className={`text-xs font-bold px-2 py-1 rounded-md flex items-center gap-1 ${isEx ? 'bg-green-100 text-green-700' : (isBio ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600')}`}>
+                            {log.category} • {getRecordTimeLabel(log.category)} {log.time} {log.isAlcohol && <span className="text-[10px]">🍺</span>}
+                          </span>
+
+                          {deleteConfirmId === log.id ? (
+                            <div className="flex gap-1 items-center bg-red-50 px-2 py-1 rounded-lg">
+                              <span className="text-[10px] text-red-600 font-bold mr-1">삭제?</span>
+                              <button onClick={() => executeDelete(log.id)} className="text-white bg-red-500 hover:bg-red-600 px-2 py-1 rounded text-xs font-bold">네</button>
+                              <button onClick={() => setDeleteConfirmId(null)} className="text-gray-600 bg-gray-200 hover:bg-gray-300 px-2 py-1 rounded text-xs font-bold">아니오</button>
+                            </div>
+                          ) : (
+                            <div className="flex gap-2">
+                              <button onClick={() => handleEditClick(log)} className="text-gray-400 hover:text-blue-500 bg-gray-50 p-1 rounded-lg">✏️</button>
+                              <button onClick={() => setDeleteConfirmId(log.id)} className="text-gray-400 hover:text-red-500 bg-red-50 p-1 rounded-lg">🗑️</button>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="flex mt-1 items-start gap-2 group mb-1">
+                          <h3 className="font-bold text-gray-800 text-lg flex-1 leading-tight">{log.foodName}</h3>
+                        </div>
+
+                        <p className="text-sm font-semibold text-gray-700 mb-2 whitespace-pre-wrap">
+                          {log.ingredients && log.ingredients.length > 0 ? (Array.isArray(log.ingredients) ? log.ingredients.join(' | ') : log.ingredients) : ''}
+                        </p>
+
+                        {log.healthTags?.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5 mb-3" data-health-tags>
+                            {log.healthTags.slice(0, 2).map((tag, index) => (
+                              <span key={`${tag.tagKey}-${index}`} title={tag.evidence}
+                                className={`max-w-full text-[11px] font-bold px-2.5 py-1 rounded-lg border whitespace-nowrap overflow-hidden text-ellipsis ${tag.polarity === 'helpful' ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-amber-50 border-amber-200 text-amber-800'}`}>
+                                {tag.polarity === 'helpful' ? '✓' : '!'} {tag.tagLabel}{tag.foodName ? ` · ${tag.foodName}` : ''}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        {images.length > 0 && (
+                          <div className="flex gap-2 mb-3 overflow-x-auto no-scrollbar pt-1">
+                            {images.map((src, i) => (
+                              <img key={i} src={src} onClick={() => setLightboxImage(src)} className="w-20 h-20 md:w-24 md:h-24 object-cover rounded-2xl shrink-0 border border-gray-100 shadow-sm cursor-pointer active:opacity-80 transition" />
+                            ))}
+                          </div>
+                        )}
+
+                        <p className="text-sm bg-blue-50 text-blue-800 p-3 rounded-xl leading-snug whitespace-pre-wrap">
+                          {log.analysis}
+                        </p>
+
+                        {log.followupAnswer ? (
+                          <div className="mt-2 bg-indigo-50 rounded-xl p-3">
+                            <p className="text-xs font-bold text-indigo-500 mb-1">🤔 {log.followupQuestion}</p>
+                            <p className="text-sm text-indigo-800 whitespace-pre-wrap leading-snug">{log.followupAnswer}</p>
+                          </div>
+                        ) : openFollowupId === log.id ? (
+                          <div className="mt-2 flex flex-col gap-2">
+                            <textarea
+                              value={followupDraft}
+                              onChange={e => setFollowupDraft(e.target.value)}
+                              placeholder="이 분석에 대해 궁금한 점을 물어보세요 (기록당 1회)"
+                              rows={2}
+                              maxLength={300}
+                              className="w-full text-sm bg-gray-50 border border-gray-200 rounded-xl p-2.5 outline-none focus:border-blue-500 resize-none"
+                            />
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                disabled={submittingFollowupId === log.id || !followupDraft.trim()}
+                                onClick={() => handleAskFollowup(log.id)}
+                                className="flex-1 bg-blue-600 text-white text-xs font-bold py-2 rounded-lg disabled:opacity-60"
+                              >
+                                {submittingFollowupId === log.id ? '질문 중...' : '질문하기'}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={submittingFollowupId === log.id}
+                                onClick={() => { setOpenFollowupId(null); setFollowupDraft(''); }}
+                                className="px-3 bg-gray-100 text-gray-500 text-xs font-bold py-2 rounded-lg disabled:opacity-60"
+                              >
+                                취소
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => { setOpenFollowupId(log.id); setFollowupDraft(''); }}
+                            className="mt-2 text-xs font-bold text-blue-500 hover:text-blue-700"
+                          >
+                            🤔 더 물어보기
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+
+            {activeTab === 'stats' && (
+              <div className="space-y-6 animate-fade-in">
+                <HealthTagSummary items={periodLogs} title={`${statsMode === 'month' ? '월간' : '주간'} 건강 영향`} />
+                <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100" data-condition-report>
+                  <div className="flex items-start justify-between gap-3 mb-4">
+                    <div className="min-w-0">
+                      <h3 className="font-bold text-gray-800 leading-snug">🧭 기저질환별 2개월 분석</h3>
+                      <p className="text-xs text-gray-500 mt-1 leading-relaxed">자주 먹은 음식과 음주·운동·생체 기록을 최근 30일과 이전 30일로 나누어 살펴봅니다.</p>
+                    </div>
+                    {selectedConditionHistory.length > 0 && (
+                      <span className="text-[11px] font-bold text-gray-500 bg-gray-100 px-2 py-1 rounded-lg whitespace-nowrap shrink-0">저장 {selectedConditionHistory.length}회</span>
+                    )}
+                  </div>
+
+                  {conditionLabels.length === 0 ? (
+                    <div className="bg-gray-50 rounded-2xl p-4 text-sm text-gray-500 leading-relaxed">
+                      회원정보에 기저질환을 입력하면 질환별 생활습관 분석을 받을 수 있습니다.
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1 mb-4" data-condition-selector>
+                        {conditionLabels.map(label => (
+                          <button
+                            key={conditionKeyForLabel(label)} type="button" onClick={() => setSelectedCondition(label)}
+                            className={`shrink-0 whitespace-nowrap px-3 py-2 rounded-xl text-sm font-bold border transition ${selectedCondition === label ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-gray-200 text-gray-600'}`}
+                          >{label}</button>
+                        ))}
+                      </div>
+
+                      {latestConditionData ? (
+                        <div className="space-y-4" data-condition-report-result>
+                          <div className="rounded-2xl bg-indigo-50 border border-indigo-100 p-4">
+                            <div className="flex items-center justify-between gap-2 mb-2">
+                              <span className={`text-[11px] font-bold px-2 py-1 rounded-lg whitespace-nowrap ${conditionStatusMeta[latestConditionData.status]?.color || conditionStatusMeta.insufficient.color}`}>
+                                {conditionStatusMeta[latestConditionData.status]?.label || conditionStatusMeta.insufficient.label}
+                              </span>
+                              <span className="text-[11px] text-gray-400 whitespace-nowrap">{latestConditionReport.windowStart} ~ {latestConditionReport.windowEnd}</span>
+                            </div>
+                            <h4 className="font-bold text-indigo-900 leading-snug">{latestConditionData.headline}</h4>
+                            <p className="text-sm text-indigo-900/80 mt-2 leading-relaxed whitespace-pre-wrap">{latestConditionData.summary}</p>
+                          </div>
+
+                          {latestConditionData.comparison && (
+                            <div className="rounded-2xl bg-blue-50 border border-blue-100 p-4">
+                              <h4 className="text-sm font-bold text-blue-800 mb-1.5">📈 이전 흐름과 비교</h4>
+                              <p className="text-sm text-blue-900/80 leading-relaxed whitespace-pre-wrap">{latestConditionData.comparison}</p>
+                            </div>
+                          )}
+
+                          {latestConditionData.frequentFoods?.length > 0 && (
+                            <div>
+                              <h4 className="text-sm font-bold text-gray-700 mb-2">🍽️ 자주 기록한 음식</h4>
+                              <div className="space-y-2">
+                                {latestConditionData.frequentFoods.map((food, index) => (
+                                  <div key={`${food.name}-${index}`} className="rounded-xl bg-gray-50 border border-gray-100 px-3 py-2.5">
+                                    <div className="flex justify-between items-center gap-2 mb-1">
+                                      <span className="text-sm font-bold text-gray-800 min-w-0 break-keep">{food.name}</span>
+                                      <span className={`text-[11px] font-bold px-2 py-1 rounded-lg whitespace-nowrap shrink-0 ${food.impact === 'helpful' ? 'bg-emerald-100 text-emerald-700' : food.impact === 'caution' ? 'bg-amber-100 text-amber-800' : 'bg-gray-200 text-gray-600'}`}>{food.count}회</span>
+                                    </div>
+                                    {food.reason && <p className="text-xs text-gray-500 leading-relaxed">{food.reason}</p>}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="grid grid-cols-1 gap-3">
+                            {latestConditionData.positiveHabits?.length > 0 && (
+                              <div className="rounded-2xl bg-emerald-50 border border-emerald-100 p-4">
+                                <h4 className="text-sm font-bold text-emerald-800 mb-2">✓ 잘하고 있는 습관</h4>
+                                <div className="space-y-1.5">{latestConditionData.positiveHabits.map((item, index) => <p key={index} className="text-sm text-emerald-900/80 leading-relaxed">• {item}</p>)}</div>
+                              </div>
+                            )}
+                            {latestConditionData.cautionHabits?.length > 0 && (
+                              <div className="rounded-2xl bg-amber-50 border border-amber-100 p-4">
+                                <h4 className="text-sm font-bold text-amber-800 mb-2">! 주의해서 볼 습관</h4>
+                                <div className="space-y-1.5">{latestConditionData.cautionHabits.map((item, index) => <p key={index} className="text-sm text-amber-900/80 leading-relaxed">• {item}</p>)}</div>
+                              </div>
+                            )}
+                            {latestConditionData.nextActions?.length > 0 && (
+                              <div className="rounded-2xl bg-violet-50 border border-violet-100 p-4">
+                                <h4 className="text-sm font-bold text-violet-800 mb-2">🎯 다음 30일 행동</h4>
+                                <div className="space-y-1.5">{latestConditionData.nextActions.map((item, index) => <p key={index} className="text-sm text-violet-900/80 leading-relaxed">{index + 1}. {item}</p>)}</div>
+                              </div>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-gray-400 leading-relaxed">분석일 {new Date(latestConditionReport.createdAt).toLocaleDateString('ko-KR')} · 기록된 날만 근거로 사용하며 미기록일은 판단하지 않습니다.</p>
+                        </div>
+                      ) : (
+                        <div className="bg-gray-50 rounded-2xl p-4 text-sm text-gray-500 leading-relaxed mb-4">
+                          아직 저장된 {selectedCondition} 분석이 없습니다. 현재까지 기록된 최근 60일 데이터를 분석할 수 있습니다.
+                        </div>
+                      )}
+
+                      <button
+                        type="button" onClick={handleGenerateConditionReport} disabled={isGeneratingConditionReport}
+                        className="w-full mt-4 bg-indigo-600 text-white font-bold py-3.5 rounded-xl disabled:opacity-60 active:scale-[0.99] transition"
+                      >{latestConditionData ? '🔄 최신 기록으로 다시 분석하기' : '✨ 최근 2개월 분석받기'}</button>
+                    </>
+                  )}
+                </div>
+                {!periodGoalLoading && !periodGoal && (
+                  <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <h3 className="font-bold text-gray-800">🎯 {statsMode === 'month' ? '월간' : '주간'} 목표</h3>
+                      <p className="text-xs text-gray-500 mt-1">아직 이 기간의 목표가 없습니다.</p>
+                    </div>
+                    <button type="button" onClick={() => setIsPeriodGoalOpen(true)} className="shrink-0 text-xs font-bold text-blue-600 bg-blue-50 px-3 py-2 rounded-xl">설정하기</button>
+                  </div>
+                )}
+                {!periodGoalLoading && periodGoal?.status === 'skipped' && (
+                  <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <h3 className="font-bold text-gray-800">🎯 {statsMode === 'month' ? '월간' : '주간'} 목표</h3>
+                      <p className="text-xs text-gray-500 mt-1">이 기간은 목표를 설정하지 않았습니다.</p>
+                    </div>
+                    <button type="button" onClick={() => setIsPeriodGoalOpen(true)} className="shrink-0 text-xs font-bold text-blue-600 bg-blue-50 px-3 py-2 rounded-xl">설정하기</button>
+                  </div>
+                )}
+                {hasAnyGoal && (
+                  <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
+                    <div className="flex items-center justify-between gap-3 mb-4">
+                      <h3 className="font-bold text-gray-800 flex items-center gap-1">🎯 {statsMode === 'month' ? '월간' : '주간'} 목표 달성 현황</h3>
+                      <button type="button" onClick={() => setIsPeriodGoalOpen(true)} className="text-xs font-bold text-blue-600 bg-blue-50 px-3 py-2 rounded-xl">수정</button>
+                    </div>
+                    <div className="space-y-4">
+                      {activePeriodGoal.exercise_target > 0 && (
+                        <div>
+                          <div className="flex justify-between text-xs font-bold text-gray-600 mb-1.5">
+                            <span>🏃‍♂️ {statsMode === 'month' ? '이번 달' : '이번 주'} 운동</span>
+                            <span>{exerciseDaysThisPeriod} / {exerciseGoalTarget}회</span>
+                          </div>
+                          <div className="w-full h-2.5 bg-gray-100 rounded-full overflow-hidden">
+                            <div className="h-full bg-green-500 rounded-full" style={{width: `${Math.min(100, (exerciseDaysThisPeriod / exerciseGoalTarget) * 100)}%`}}></div>
+                          </div>
+                        </div>
+                      )}
+                      {activePeriodGoal.alcohol_free_target > 0 && (
+                        <div>
+                          <div className="flex justify-between text-xs font-bold text-gray-600 mb-1.5">
+                            <span>🍺 {statsMode === 'month' ? '선택한 달' : '선택한 주'} 금주</span>
+                            <span>{isFetching ? '-' : alcoholGoal.alcoholFree} / {alcoholGoal.target}일</span>
+                          </div>
+                          <div className="w-full h-2.5 bg-gray-100 rounded-full overflow-hidden">
+                            <div className="h-full bg-orange-500 rounded-full" style={{width: `${!isFetching && alcoholGoal.target > 0 ? Math.min(100, (alcoholGoal.alcoholFree / alcoholGoal.target) * 100) : 0}%`}}></div>
+                          </div>
+                          <p className="text-[11px] text-gray-400 mt-1.5">오늘까지 음주 기록이 없는 날을 금주로 계산합니다.</p>
+                        </div>
+                      )}
+                      {activePeriodGoal.weight_target > 0 && (
+                        <div className="border-t border-gray-100 pt-3 text-xs font-bold text-gray-600">
+                          <div className="flex justify-between items-center gap-2">
+                            <span className="whitespace-nowrap">⚖️ 목표 체중</span>
+                            {latestBiometrics?.weight && <span className="text-[11px] font-medium text-gray-400 whitespace-nowrap">최근 {latestBiometrics.dates?.weight ? latestBiometrics.dates.weight.slice(5).replace('-', '.') : '날짜없음'}</span>}
                           </div>
                           {latestBiometrics?.weight ? (
                             <div className="flex justify-between items-center gap-2 mt-1.5 whitespace-nowrap">
@@ -1951,4 +3021,3 @@ Total output lines: 3024
   </script>
 </body>
 </html>
-
