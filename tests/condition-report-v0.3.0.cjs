@@ -39,6 +39,8 @@ window.supabase={createClient(){
 
   await page.goto('https://condition-report.local/');
   await page.getByRole('button',{name:/통계/}).click({timeout:45000});
+  const goalModal=page.locator('[data-period-goal-modal]');
+  if(await goalModal.count()) await goalModal.getByRole('button',{name:'목표 설정 닫기'}).click();
   const card=page.locator('[data-condition-report]');
   await card.getByRole('heading',{name:/기저질환별 2개월 분석/}).waitFor();
   assert.equal(await card.locator('[data-condition-selector] button').count(),2);
