@@ -58,6 +58,7 @@
       isAlcohol: !!row.is_alcohol,
       followupQuestion: row.followup_question || null,
       followupAnswer: row.followup_answer || null,
+      exerciseMeta: row.exercise_meta || row.exerciseMeta || null,
       healthTags: (row.food_health_tags || row.healthTags || []).map(tag => ({
         foodIndex: tag.food_index ?? tag.foodIndex ?? 0,
         foodName: tag.food_name ?? tag.foodName ?? '',
@@ -69,6 +70,90 @@
         evidence: tag.evidence || '',
       })),
     });
+
+    // ★ v0.3.6 운동 부위 균형. 서버 diet-ai_v0.0.11.ts의 computeExerciseBalance와 같은 규칙:
+    // 큰 부위는 최근 30일, 세부 부위 비중은 전체 기록, 최근 2일 안에 한 부위는 추천에서 제외.
+    const EXERCISE_PARTS = [
+      { key: 'chest', label: '가슴', subs: [['upper_chest', '윗가슴'], ['mid_chest', '중간가슴'], ['lower_chest', '밑가슴']] },
+      { key: 'back', label: '등', subs: [['lat', '넓이'], ['mid_back', '두께'], ['lower_back', '허리']] },
+      { key: 'shoulder', label: '어깨', subs: [['front_delt', '전면'], ['side_delt', '측면'], ['rear_delt', '후면']] },
+      { key: 'arm', label: '팔', subs: [['biceps', '이두'], ['triceps', '삼두']] },
+      { key: 'legs', label: '하체', subs: [['quads', '앞허벅지'], ['hamstrings', '뒷허벅지'], ['glutes', '엉덩이'], ['calves', '종아리']] },
+      { key: 'core', label: '코어', subs: [['abs', '복부'], ['obliques', '옆구리']] },
+    ];
+    const RECOMMENDABLE_EXERCISE_PARTS = ['chest', 'back', 'shoulder', 'legs'];
+    const EXERCISE_BALANCE_DAYS = 30;
+    const EXERCISE_RECOVERY_DAYS = 2;
+    const EXERCISE_CARDIO_DAYS_TARGET = 8;
+    const EXERCISE_SUB_MIN_SESSIONS = 3;
+
+    const computeExerciseBalance = (rows, referenceDate) => {
+      const shift = (dateStr, delta) => { const d = new Date(dateStr + 'T00:00:00'); d.setDate(d.getDate() + delta); return formatDate(d); };
+      const windowStart = shift(referenceDate, -(EXERCISE_BALANCE_DAYS - 1));
+      const recoveryStart = shift(referenceDate, -EXERCISE_RECOVERY_DAYS);
+      const parts = Object.fromEntries(EXERCISE_PARTS.map(p => [p.key, { dates: new Set(), last: null, recent: false, sessions: 0, subs: {} }]));
+      const cardioDates = new Set();
+      let cardioMinutes = 0, classifiedLogs = 0;
+
+      rows.forEach(row => {
+        const date = row.log_date;
+        const inWindow = date >= windowStart && date <= referenceDate;
+        const partsInLog = new Set();
+        const subsInLog = {};
+        let known = false;
+        (row.exercise_meta?.items || []).forEach(item => {
+          if (item?.kind === 'cardio') {
+            known = true;
+            if (inWindow) { cardioDates.add(date); if (Number(item.minutes) > 0) cardioMinutes += Number(item.minutes); }
+          }
+          (item?.targets || []).forEach(target => {
+            const [part, sub] = String(target).split('.');
+            if (!parts[part]) return;
+            known = true;
+            partsInLog.add(part);
+            if (sub) (subsInLog[part] = subsInLog[part] || new Set()).add(sub);
+          });
+        });
+        if (known) classifiedLogs += 1;
+        partsInLog.forEach(part => {
+          const p = parts[part];
+          if (inWindow) p.dates.add(date);
+          if (!p.last || date > p.last) p.last = date;
+          if (date >= recoveryStart && date <= referenceDate) p.recent = true;
+        });
+        Object.entries(subsInLog).forEach(([part, subs]) => {
+          const p = parts[part];
+          p.sessions += 1;
+          subs.forEach(sub => {
+            const s = p.subs[sub] = p.subs[sub] || { count: 0, last: '' };
+            s.count += 1;
+            if (date > s.last) s.last = date;
+          });
+        });
+      });
+
+      const daysAgo = (date) => date ? Math.round((parseDate(referenceDate) - parseDate(date)) / 86400000) : null;
+      const summary = EXERCISE_PARTS.map(def => {
+        const p = parts[def.key];
+        const subs = def.subs.map(([sub, label]) => ({ sub, label, count: p.subs[sub]?.count || 0, last: p.subs[sub]?.last || '' }));
+        let lacking = null;
+        if (p.sessions >= EXERCISE_SUB_MIN_SESSIONS) {
+          const max = Math.max(...subs.map(s => s.count));
+          lacking = subs
+            .filter(s => s.count <= Math.floor(p.sessions * 0.2) && max - s.count >= 2)
+            .sort((a, b) => a.count - b.count || a.last.localeCompare(b.last))[0] || null;
+        }
+        return { ...def, days: p.dates.size, lastDate: p.last, daysAgo: daysAgo(p.last), recent: p.recent, sessions: p.sessions, subs, lacking };
+      });
+      const recommendOrder = summary
+        .filter(p => RECOMMENDABLE_EXERCISE_PARTS.includes(p.key) && !p.recent)
+        .sort((a, b) => a.days - b.days || (a.lastDate || '').localeCompare(b.lastDate || ''));
+      return {
+        referenceDate, classifiedLogs, summary,
+        recommended: recommendOrder[0] || null,
+        cardioDays: cardioDates.size, cardioMinutes, cardioNeeded: cardioDates.size < EXERCISE_CARDIO_DAYS_TARGET,
+      };
+    };
 
     const summarizeHealthTags = (items) => {
       const tags = (items || []).flatMap(item => item.healthTags || []);
@@ -521,6 +606,11 @@
       const [dailyReport, setDailyReport] = useState(null);
       const [isGeneratingDaily, setIsGeneratingDaily] = useState(false);
 
+      // ★ v0.3.6 현황 화면의 부위별 운동 균형 카드
+      const [exerciseBalance, setExerciseBalance] = useState(null);
+      const [unclassifiedExerciseCount, setUnclassifiedExerciseCount] = useState(0);
+      const [isClassifyingExercises, setIsClassifyingExercises] = useState(false);
+
       // ★ 설정에 적은 기저질환마다 최근 60일 생활습관 분석 이력을 별도로 보관
       const [conditionReports, setConditionReports] = useState([]);
       const [selectedCondition, setSelectedCondition] = useState('');
@@ -683,8 +773,47 @@
           setActiveRange(range);
           fetchPeriodLogs(range.start, range.end);
           fetchPeriodGoal(range, statsMode, activeTab === 'status');
+          if (activeTab === 'status') fetchExerciseBalance(range.end);
         }
       }, [currentDate, activeTab, session, statsMode]);
+
+      // ★ 운동 부위 균형: 선택한 기간의 마지막 날(오늘 이후면 오늘)을 기준으로 계산한다.
+      // 세부 부위는 전체 기록을 보므로 기준일까지의 운동 기록을 모두 불러온다.
+      const fetchExerciseBalance = async (rangeEnd) => {
+        const today = formatDate(new Date());
+        const referenceDate = rangeEnd && rangeEnd < today ? rangeEnd : today;
+        const rows = [];
+        for (let offset = 0; offset < 20000; offset += 1000) {
+          const { data, error } = await withAuthRetry(() => sb.from('logs').select('log_date, exercise_meta')
+            .eq('category', '운동').lte('log_date', referenceDate).not('exercise_meta', 'is', null)
+            .order('log_date', { ascending: true }).range(offset, offset + 999));
+          if (error) { setExerciseBalance(null); return; } // 보조 카드라 실패해도 화면 전체를 새로고침하지 않는다
+          rows.push(...(data || []));
+          if (!data || data.length < 1000) break;
+        }
+        const { count } = await sb.from('logs').select('id', { count: 'exact', head: true })
+          .eq('category', '운동').is('exercise_meta', null);
+        setUnclassifiedExerciseCount(count || 0);
+        setExerciseBalance(computeExerciseBalance(rows, referenceDate));
+      };
+
+      // ★ 예전 운동 기록 분류: 서버가 40건씩 처리하므로 남은 기록이 없을 때까지 반복한다.
+      const handleClassifyExercises = async () => {
+        if (isClassifyingExercises) return;
+        setIsClassifyingExercises(true);
+        try {
+          for (let round = 0; round < 25; round++) {
+            const res = await callAI('classifyExercises', {});
+            setUnclassifiedExerciseCount(res.remaining || 0);
+            if (!res.remaining || !res.processed) break;
+          }
+          await fetchExerciseBalance(activeRange.end);
+        } catch (err) {
+          reportFatalError(err);
+        } finally {
+          setIsClassifyingExercises(false);
+        }
+      };
 
       const fetchConditionReports = async () => {
         if (!session) return;
@@ -2363,6 +2492,69 @@
                         </div>
                       )}
                     </div>
+                  </div>
+                )}
+
+                {exerciseBalance && (
+                  <div data-exercise-balance className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
+                    <div className="flex items-start justify-between gap-3 mb-4">
+                      <h3 className="font-bold text-gray-800">🏋️ 부위별 운동 균형</h3>
+                      <span className="shrink-0 text-[11px] font-bold text-gray-400 mt-0.5">최근 {EXERCISE_BALANCE_DAYS}일 · {exerciseBalance.referenceDate.slice(5).replace('-', '.')} 기준</span>
+                    </div>
+                    {exerciseBalance.classifiedLogs === 0 ? (
+                      <p className="text-xs text-gray-500 leading-relaxed">아직 부위가 정리된 운동 기록이 없어요. 운동 이름을 적어 기록하면 부위별로 모아서 보여드려요.</p>
+                    ) : (
+                      <>
+                        {exerciseBalance.recommended && (
+                          <div className="bg-indigo-50 border border-indigo-100 rounded-2xl px-4 py-3 mb-4">
+                            <p className="text-sm font-bold text-indigo-800">다음 추천 부위: {exerciseBalance.recommended.label}{exerciseBalance.cardioNeeded ? ' · 유산소' : ''}</p>
+                            <p className="text-[11px] text-indigo-600 mt-1 leading-relaxed">
+                              {exerciseBalance.recommended.label} 최근 {EXERCISE_BALANCE_DAYS}일 {exerciseBalance.recommended.days}일 기록 · {exerciseBalance.recommended.daysAgo === null ? '기록 없음' : `마지막 ${exerciseBalance.recommended.daysAgo}일 전`}
+                              {exerciseBalance.cardioNeeded ? ` · 유산소 ${exerciseBalance.cardioDays}일` : ''}
+                            </p>
+                          </div>
+                        )}
+                        <div className="space-y-3">
+                          {(() => {
+                            const maxDays = Math.max(1, ...exerciseBalance.summary.map(p => p.days));
+                            return exerciseBalance.summary.map(p => (
+                              <div key={`part-${p.key}`}>
+                                <div className="flex items-center gap-2 text-xs font-bold">
+                                  <span className="w-9 shrink-0 text-gray-700">{p.label}</span>
+                                  <div className="flex-1 min-w-0 h-2.5 bg-gray-100 rounded-full overflow-hidden">
+                                    <div className={`h-full rounded-full ${p.days ? 'bg-indigo-500' : ''}`} style={{ width: `${(p.days / maxDays) * 100}%` }}></div>
+                                  </div>
+                                  <span className="w-8 shrink-0 text-right text-gray-800">{p.days}일</span>
+                                  <span className={`w-16 shrink-0 text-right text-[11px] ${p.recent ? 'text-amber-600' : 'text-gray-400'}`}>
+                                    {p.recent ? '회복 중' : p.daysAgo === null ? '기록 없음' : `${p.daysAgo}일 전`}
+                                  </span>
+                                </div>
+                                {p.sessions > 0 && (
+                                  <p className="pl-11 mt-1 text-[11px] text-gray-400 leading-relaxed">
+                                    전체: {p.subs.map(s => `${s.label} ${s.count}`).join(' · ')}
+                                    {p.lacking && <span className="ml-1 font-bold text-amber-600 whitespace-nowrap">· {p.lacking.label} 비중 적음</span>}
+                                  </p>
+                                )}
+                              </div>
+                            ));
+                          })()}
+                          <div className="flex items-center gap-2 text-xs font-bold border-t border-gray-100 pt-3">
+                            <span className="w-9 shrink-0 text-gray-700">유산소</span>
+                            <span className="flex-1 min-w-0 text-gray-800">{exerciseBalance.cardioDays}일{exerciseBalance.cardioMinutes ? ` · 확인된 ${exerciseBalance.cardioMinutes}분` : ''}</span>
+                            <span className={`shrink-0 text-[11px] ${exerciseBalance.cardioNeeded ? 'text-amber-600' : 'text-green-600'}`}>{exerciseBalance.cardioNeeded ? '주 2회 권장' : '충분'}</span>
+                          </div>
+                        </div>
+                        <p className="text-[11px] text-gray-400 mt-3 leading-relaxed">기록된 운동만 셉니다. 세부 부위는 그 부위 기록이 {EXERCISE_SUB_MIN_SESSIONS}회 이상일 때만 비교해요.</p>
+                      </>
+                    )}
+                    {unclassifiedExerciseCount > 0 && (
+                      <div className="mt-4 flex items-center justify-between gap-3 bg-gray-50 rounded-2xl px-4 py-3">
+                        <p className="min-w-0 text-[11px] text-gray-600 leading-relaxed">부위 정리 전 예전 운동 기록 {unclassifiedExerciseCount}건</p>
+                        <button type="button" onClick={handleClassifyExercises} disabled={isClassifyingExercises} className="shrink-0 text-xs font-bold text-indigo-600 bg-white border border-indigo-100 px-3 py-2 rounded-xl disabled:opacity-50">
+                          {isClassifyingExercises ? '정리 중...' : '정리하기'}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
 

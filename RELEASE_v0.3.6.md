@@ -58,4 +58,5 @@ Edge Function이 새 컬럼에 저장하므로 반드시 1번을 먼저 적용�
 ## 배포 범위
 
 - 시험 페이지: `index_v0.3.6.html`
-- 운영 `index.html`은 변경하지 않습니다.
+- 2026-10-30 시험 확인 후 운영 `index.html`을 v0.3.6으로 교체했습니다.
+- 되돌리기: `index_rollback_pre_v0.3.6.html`(v0.3.5 운영 화면)을 `index.html`로 복사
