@@ -44,6 +44,10 @@
     const EMAIL_DOMAIN = '@dietapp.local'; // 계정명만으로 가입/로그인하기 위한 내부용 더미 이메일 도메인
     const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+    // ★ v0.3.7 본인 섭취량 버튼. 서버(diet-ai_v0.0.12.ts)의 PORTION_SHARES와 같아야 한다.
+    const PORTION_SHARES = [0.5, 1, 1.5, 2];
+    const portionShareLabel = (share) => share === 0.5 ? '반 인분' : share >= 2 ? '2인분 이상' : `${share}인분`;
+
     // logs 테이블 행 -> 기존 화면 코드가 기대하는 모양으로 변환
     const mapLogRow = (row) => ({
       id: row.id,
@@ -59,6 +63,7 @@
       followupQuestion: row.followup_question || null,
       followupAnswer: row.followup_answer || null,
       exerciseMeta: row.exercise_meta || row.exerciseMeta || null,
+      portionCheck: row.portion_check || row.portionCheck || null,
       healthTags: (row.food_health_tags || row.healthTags || []).map(tag => ({
         foodIndex: tag.food_index ?? tag.foodIndex ?? 0,
         foodName: tag.food_name ?? tag.foodName ?? '',
@@ -573,6 +578,8 @@
       const [openFollowupId, setOpenFollowupId] = useState(null);
       const [followupDraft, setFollowupDraft] = useState('');
       const [submittingFollowupId, setSubmittingFollowupId] = useState(null);
+      const [submittingPortionId, setSubmittingPortionId] = useState(null);
+      const [editingPortionId, setEditingPortionId] = useState(null);
 
       // ★ 홈/통계 화면 좌우 스와이프로 전날·다음날(또는 전주·다음주/전월·다음월) 이동
       const touchStartRef = useRef(null);
@@ -1380,6 +1387,57 @@
         } finally {
           setSubmittingFollowupId(null);
         }
+      };
+
+      // ★ v0.3.7 여러 인분을 나눠 먹은 기록의 본인 섭취량 (후속 질문 1회 제한과 별개)
+      const handleAnswerPortion = async (logId, share) => {
+        setSubmittingPortionId(logId);
+        try {
+          const res = await callAI('answerPortion', { id: logId, share });
+          const apply = (item) => item && item.id === logId ? { ...item, ...res } : item;
+          setLogs(prev => prev.map(apply));
+          setPeriodLogs(prev => prev.map(apply));
+          setFeedbackPopupLog(prev => apply(prev));
+          setEditingPortionId(null);
+          if (res.foodName) fetchGoalStats();
+        } catch (err) {
+          reportFatalError(err);
+        } finally {
+          setSubmittingPortionId(null);
+        }
+      };
+
+      const renderPortionCheck = (log) => {
+        const check = log.portionCheck;
+        if (!check || !Array.isArray(check.dishes) || check.dishes.length === 0) return null;
+        const busy = submittingPortionId === log.id;
+        if (check.share != null && editingPortionId !== log.id) {
+          return (
+            <div className="mt-2 flex items-center justify-between gap-2 bg-gray-50 rounded-xl px-3 py-2" data-portion-check>
+              <p className="text-xs text-gray-600 min-w-0">🍽️ 본인 섭취량: <span className="font-bold text-gray-800">{portionShareLabel(check.share)}</span> 기준으로 분석했어요</p>
+              <button type="button" onClick={() => setEditingPortionId(log.id)} className="text-xs font-bold text-blue-500 whitespace-nowrap shrink-0">바꾸기</button>
+            </div>
+          );
+        }
+        return (
+          <div className="mt-2 bg-amber-50 border border-amber-100 rounded-xl p-3" data-portion-check>
+            <p className="text-xs text-amber-900 leading-snug break-keep mb-2">
+              🍽️ {check.dishes.join(', ')} 중 본인은 대략 몇 인분쯤 드셨나요? 고르시면 그 양으로 다시 분석해요.
+            </p>
+            <div className="grid grid-cols-4 gap-1.5">
+              {PORTION_SHARES.map(share => (
+                <button key={share} type="button" disabled={busy} onClick={() => handleAnswerPortion(log.id, share)}
+                  className={`text-xs font-bold py-2 rounded-lg border disabled:opacity-60 ${check.share === share ? 'bg-amber-500 border-amber-500 text-white' : 'bg-white border-amber-200 text-amber-800'}`}>
+                  {portionShareLabel(share)}
+                </button>
+              ))}
+            </div>
+            {busy && <p className="text-[11px] text-amber-700 mt-2">다시 분석 중...</p>}
+            {!busy && check.share != null && (
+              <button type="button" onClick={() => setEditingPortionId(null)} className="text-[11px] font-bold text-gray-500 mt-2">취소</button>
+            )}
+          </div>
+        );
       };
 
       const handleUploadConfirm = () => {
@@ -2237,6 +2295,8 @@
                         <p className="text-sm bg-blue-50 text-blue-800 p-3 rounded-xl leading-snug whitespace-pre-wrap">
                           {log.analysis}
                         </p>
+
+                        {renderPortionCheck(log)}
 
                         {log.followupAnswer ? (
                           <div className="mt-2 bg-indigo-50 rounded-xl p-3">
@@ -3115,6 +3175,8 @@
                 <div className="bg-blue-50 border border-blue-100 rounded-2xl p-4 mb-4">
                   <p className="text-sm text-blue-900 leading-relaxed whitespace-pre-wrap break-keep">{feedbackPopupLog.analysis}</p>
                 </div>
+
+                {feedbackPopupLog.portionCheck && <div className="-mt-2 mb-4">{renderPortionCheck(feedbackPopupLog)}</div>}
 
                 <button
                   type="button"
