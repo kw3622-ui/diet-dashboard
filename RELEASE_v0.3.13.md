@@ -45,4 +45,5 @@ v0.3.12를 바탕으로 합니다.
 ## 배포 범위
 
 - 시험 페이지: `index_v0.3.13.html`
-- 운영 `index.html`은 시험 확인 후 교체합니다.
+- 2026-11-05 시험 확인 후 운영 `index.html`을 v0.3.13으로 교체했습니다(v0.3.8~v0.3.13 기능이 한 번에 운영에 반영됨). 서버는 diet-ai v0.0.18(Edge Function v25).
+- 되돌리기: `index_rollback_pre_v0.3.13.html`(v0.3.7 운영 화면)을 `index.html`로 복사

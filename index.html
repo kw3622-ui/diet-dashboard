@@ -160,17 +160,19 @@
       };
     };
 
+    // ★ v0.3.8 항목별 근거(entries)도 함께 모아 카드에서 펼쳐 볼 수 있게 한다.
     const summarizeHealthTags = (items) => {
-      const tags = (items || []).flatMap(item => item.healthTags || []);
       const groups = new Map();
-      tags.forEach(tag => {
+      (items || []).forEach(item => (item.healthTags || []).forEach(tag => {
         if (!tag.tagLabel || !['helpful', 'caution'].includes(tag.polarity)) return;
         const key = `${tag.diseaseKey}:${tag.polarity}`;
-        const current = groups.get(key) || { label: tag.tagLabel, polarity: tag.polarity, count: 0, foods: new Set() };
+        const current = groups.get(key) || { key, label: tag.tagLabel, polarity: tag.polarity, count: 0, foods: new Set(), entries: [] };
         current.count += 1;
         if (tag.foodName) current.foods.add(tag.foodName);
+        current.entries.push({ logId: item.id, date: item.date, time: item.time, category: item.category, foodName: tag.foodName || item.foodName || '', evidence: tag.evidence || '' });
         groups.set(key, current);
-      });
+      }));
+      groups.forEach(group => group.entries.sort((a, b) => `${b.date} ${b.time}`.localeCompare(`${a.date} ${a.time}`)));
       return [...groups.values()].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
     };
 
@@ -504,6 +506,97 @@
       return original ? [original] : (log?.foodName ? [String(log.foodName)] : []);
     }
 
+    // ★ v0.3.10 기록을 다시 쓸 때 입력창에 넣을 글. 사용자가 쓴 원문을 우선하고,
+    // 사진 기록은 AI가 정리한 음식 목록(+메모)을 글로 바꾼다.
+    function getCopyText(log) {
+      let raw = log?.rawInput || {};
+      if (typeof raw === 'string') {
+        try { raw = JSON.parse(raw); } catch (error) { raw = {}; }
+      }
+      const text = String(raw?.naturalText || '').trim();
+      const memo = String(raw?.memo || '').trim();
+      if (text && raw?.type !== 'image') return memo ? `${text} (${memo})` : text;
+      const names = (Array.isArray(log?.ingredients) ? log.ingredients : [])
+        .map(item => String(item || '').split('(')[0].trim()).filter(Boolean).join(', ') || String(log?.foodName || '');
+      return memo ? `${names} (${memo})` : names;
+    }
+
+    // 최근 기록(기준일 이전)을 날짜별로 합치고, 같은 내용은 하나로 묶어 최신순 limit개를 돌려준다.
+    function buildRecentMealChoices(logs, referenceDate, limit = 3) {
+      const byDate = new Map();
+      (logs || []).filter(log => log.date < referenceDate).forEach(log => {
+        const text = getCopyText(log);
+        if (!text) return;
+        byDate.set(log.date, [...(byDate.get(log.date) || []), { time: log.time || '', text }]);
+      });
+      const seen = new Set();
+      const choices = [];
+      [...byDate.entries()].sort((a, b) => b[0].localeCompare(a[0])).forEach(([date, items]) => {
+        const text = items.sort((a, b) => a.time.localeCompare(b.time)).map(item => item.text).join(', ');
+        const key = text.replace(/\s+/g, '').toLowerCase();
+        if (choices.length >= limit || seen.has(key)) return;
+        seen.add(key);
+        const daysAgo = Math.round((parseDate(referenceDate) - parseDate(date)) / 86400000);
+        choices.push({ date, text, label: daysAgo === 1 ? '어제' : daysAgo === 2 ? '그저께' : `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}` });
+      });
+      return choices;
+    }
+
+    // ★ v0.3.10 저장 중 AI 오류·새로고침이 나도 입력 내용을 잃지 않도록 이 기기에 임시 보관한다.
+    // ★ v0.3.12 AI가 잠깐 바쁘거나(서버가 다시 시도해도 실패) 인터넷이 잠깐 끊긴 오류. 새로고침해도 나아지지 않으므로
+    // 새로고침 대신 안내하고 같은 요청을 다시 보낼 수 있게 한다. 로그인·권한·저장 오류는 기존처럼 새로고침한다.
+    function isTemporaryAiError(err) {
+      if (err?.name === 'AbortError') return false;
+      const message = String(err?.message || err || '');
+      return /^AI 분석 실패|AI 응답이 비어|AI 응답 포맷|Failed to fetch|NetworkError|Load failed|network error/i.test(message);
+    }
+
+    // ★ v0.3.13 일시 오류의 종류에 맞는 안내 문구. 원문은 "오류 전문 보기"로 따로 보여준다.
+    function temporaryAiMessage(detail) {
+      const text = String(detail || '');
+      if (/HTTP 429|RESOURCE_EXHAUSTED|quota/i.test(text)) return 'AI 무료 사용 한도에 걸렸어요. 분당 한도라면 1분쯤 뒤에, 하루 한도라면 내일 다시 시도해 주세요.';
+      if (/Failed to fetch|NetworkError|Load failed|network error/i.test(text)) return '인터넷 연결이 잠깐 끊겼어요. 연결을 확인하고 다시 시도해 주세요.';
+      return 'AI가 잠시 바빠요. 잠시 후 다시 시도해 주세요.';
+    }
+
+    // ★ v0.3.12 오류로 새로고침될 때 보던 화면(탭·날짜·주간/월간)과 쓰던 질문을 잠깐 보관했다가 되살린다.
+    // 10분이 지난 값은 쓰지 않는다(다음 날 앱을 열면 지금처럼 홈의 오늘에서 시작).
+    const VIEW_STATE_KEY = 'viewStateBeforeReload';
+    const VIEW_STATE_MAX_AGE_MS = 10 * 60 * 1000;
+    function takeSavedViewState() {
+      try {
+        const saved = JSON.parse(sessionStorage.getItem(VIEW_STATE_KEY) || 'null');
+        sessionStorage.removeItem(VIEW_STATE_KEY);
+        if (!saved || !(Date.now() - saved.savedAt < VIEW_STATE_MAX_AGE_MS)) return null;
+        return {
+          activeTab: ['home', 'status', 'analysis'].includes(saved.activeTab) ? saved.activeTab : null,
+          currentDate: /^\d{4}-\d{2}-\d{2}$/.test(saved.currentDate || '') ? saved.currentDate : null,
+          statsMode: ['week', 'month'].includes(saved.statsMode) ? saved.statsMode : null,
+          longTermDrafts: saved.longTermDrafts && typeof saved.longTermDrafts === 'object' ? saved.longTermDrafts : {},
+          followupDraft: typeof saved.followupDraft === 'string' ? saved.followupDraft.slice(0, 300) : '',
+          openFollowupId: saved.openFollowupId || null,
+        };
+      } catch (error) { return null; }
+    }
+
+    const PENDING_ENTRY_KEY = 'pendingEntry';
+    function savePendingEntry(entry) {
+      try { localStorage.setItem(PENDING_ENTRY_KEY, JSON.stringify(entry)); return; } catch (error) { /* 사진 때문에 용량 초과일 수 있음 */ }
+      try {
+        const photos = entry.payload.base64Images || [];
+        localStorage.setItem(PENDING_ENTRY_KEY, JSON.stringify({ ...entry, payload: { ...entry.payload, base64Images: [] }, photosDropped: photos.length > 0 }));
+      } catch (error) { /* 보관하지 못해도 저장은 진행한다 */ }
+    }
+    function readPendingEntry(userId) {
+      try {
+        const entry = JSON.parse(localStorage.getItem(PENDING_ENTRY_KEY) || 'null');
+        return entry && entry.payload && entry.userId === userId ? entry : null;
+      } catch (error) { return null; }
+    }
+    function clearPendingEntry() {
+      try { localStorage.removeItem(PENDING_ENTRY_KEY); } catch (error) { /* 무시 */ }
+    }
+
     function MealRecordSummary({ matches }) {
       const lineRef = useRef(null);
       const allFoods = [...new Set((matches || []).flatMap(getRecordedFoodNames))];
@@ -545,8 +638,9 @@
       const [profile, setProfile] = useState(null);
       const [isSettingsOpen, setIsSettingsOpen] = useState(false);
       // 홈, 수치 중심의 현황, 해석 중심의 건강분석을 하단 메뉴에서 바로 구분한다.
-      const [activeTab, setActiveTab] = useState('home');
-      const [currentDate, setCurrentDate] = useState(formatDate(new Date()));
+      const [restoredView] = useState(takeSavedViewState);
+      const [activeTab, setActiveTab] = useState(restoredView?.activeTab || 'home');
+      const [currentDate, setCurrentDate] = useState(restoredView?.currentDate || formatDate(new Date()));
       const [activeRange, setActiveRange] = useState({ start: '', end: '', label: '' });
 
       const [logs, setLogs] = useState([]);
@@ -564,6 +658,10 @@
       const [isAnalyzing, setIsAnalyzing] = useState(false);
       const [sysError, setSysError] = useState("");
       const [sysNotice, setSysNotice] = useState("");
+      // ★ v0.3.10 최근 아침 기록 후보, 저장되지 않은 기록
+      const [recentBreakfasts, setRecentBreakfasts] = useState([]);
+      const [isRecentMealOpen, setIsRecentMealOpen] = useState(false);
+      const [pendingEntry, setPendingEntry] = useState(null);
 
       const [reanalyzingId, setReanalyzingId] = useState(null);
       const [deleteConfirmId, setDeleteConfirmId] = useState(null);
@@ -575,8 +673,8 @@
       const [feedbackPopupLog, setFeedbackPopupLog] = useState(null);
 
       // ★ 사진/한줄기록 분석에 대한 후속 질문 (기록당 1회) — 어느 기록의 입력창이 열려있는지, 입력값, 제출 중 여부
-      const [openFollowupId, setOpenFollowupId] = useState(null);
-      const [followupDraft, setFollowupDraft] = useState('');
+      const [openFollowupId, setOpenFollowupId] = useState(restoredView?.openFollowupId || null);
+      const [followupDraft, setFollowupDraft] = useState(restoredView?.followupDraft || '');
       const [submittingFollowupId, setSubmittingFollowupId] = useState(null);
       const [submittingPortionId, setSubmittingPortionId] = useState(null);
       const [editingPortionId, setEditingPortionId] = useState(null);
@@ -592,6 +690,7 @@
       };
       const handleContentTouchEnd = (e) => {
         if (!touchStartRef.current) return;
+        if (activeTab === 'analysis' && analysisView === 'longterm') { touchStartRef.current = null; return; }
         const t = e.changedTouches[0];
         const dx = t.clientX - touchStartRef.current.x;
         const dy = t.clientY - touchStartRef.current.y;
@@ -606,7 +705,17 @@
       const abortControllerRef = useRef(null);
       const [loadingElapsed, setLoadingElapsed] = useState(0);
 
-      const [statsMode, setStatsMode] = useState('week');
+      const [statsMode, setStatsMode] = useState(restoredView?.statsMode || 'week');
+      // ★ v0.3.8 건강분석 안의 탭: period(기간 분석) / longterm(장기 분석). 마지막 선택을 기억한다.
+      const [analysisView, setAnalysisView] = useState(() => {
+        try { return localStorage.getItem('analysisView') === 'longterm' ? 'longterm' : 'period'; } catch { return 'period'; }
+      });
+      useEffect(() => {
+        try { localStorage.setItem('analysisView', analysisView); } catch { /* 저장 안 돼도 동작에는 문제 없음 */ }
+      }, [analysisView]);
+      const isLongTermView = activeTab === 'analysis' && analysisView === 'longterm';
+      const [openTagGroup, setOpenTagGroup] = useState(null);
+      const [showAllTagGroups, setShowAllTagGroups] = useState(false);
       const [aiReport, setAiReport] = useState("");
       const [isGeneratingReport, setIsGeneratingReport] = useState(false);
 
@@ -622,6 +731,18 @@
       const [conditionReports, setConditionReports] = useState([]);
       const [selectedCondition, setSelectedCondition] = useState('');
       const [isGeneratingConditionReport, setIsGeneratingConditionReport] = useState(false);
+      // ★ v0.3.9 장기 분석 탭의 습관 분석(하루 1회)
+      const [habitReport, setHabitReport] = useState(null);
+      const [habitRecordCount, setHabitRecordCount] = useState(null);
+      const [isGeneratingHabit, setIsGeneratingHabit] = useState(false);
+      const [showHabitDetail, setShowHabitDetail] = useState(false);
+      // ★ v0.3.11 장기 분석 질문. 키는 "habit:<분석 id>" / "condition:<분석 id>"
+      const [longTermFollowups, setLongTermFollowups] = useState({});
+      const [longTermDrafts, setLongTermDrafts] = useState(restoredView?.longTermDrafts || {});
+      // ★ v0.3.12 AI 일시 오류 안내 { message, retry }
+      const [aiBusy, setAiBusy] = useState(null);
+      const [showAiDetail, setShowAiDetail] = useState(false);
+      const [askingLongTermKey, setAskingLongTermKey] = useState(null);
       const conditionLabels = parseProfileConditions(profile?.disease || '');
 
       const [authMode, setAuthMode] = useState('login');
@@ -671,18 +792,18 @@
         const releaseWakeLock = async () => {
           if (wakeLockRef.current !== null) { await wakeLockRef.current.release(); wakeLockRef.current = null; }
         };
-        if (isAnalyzing || reanalyzingId || isGeneratingReport || isGeneratingDaily || isGeneratingConditionReport || isCompressing) requestWakeLock();
+        if (isAnalyzing || reanalyzingId || isGeneratingReport || isGeneratingDaily || isGeneratingConditionReport || isGeneratingHabit || isCompressing) requestWakeLock();
         else releaseWakeLock();
-      }, [isAnalyzing, reanalyzingId, isGeneratingReport, isGeneratingDaily, isGeneratingConditionReport, isCompressing]);
+      }, [isAnalyzing, reanalyzingId, isGeneratingReport, isGeneratingDaily, isGeneratingConditionReport, isGeneratingHabit, isCompressing]);
 
       // ★ AI 응답 대기 시간 카운트 — 30초 넘게 걸리면 로딩 화면에 "계속 기다리기/취소" 안내를 띄우기 위함
       useEffect(() => {
-        const isAiLoading = isAnalyzing || !!reanalyzingId || isGeneratingReport || isGeneratingDaily || isGeneratingConditionReport;
+        const isAiLoading = isAnalyzing || !!reanalyzingId || isGeneratingReport || isGeneratingDaily || isGeneratingConditionReport || isGeneratingHabit;
         if (!isAiLoading) { setLoadingElapsed(0); return; }
         setLoadingElapsed(0);
         const timer = setInterval(() => setLoadingElapsed(prev => prev + 1), 1000);
         return () => clearInterval(timer);
-      }, [isAnalyzing, reanalyzingId, isGeneratingReport, isGeneratingDaily, isGeneratingConditionReport]);
+      }, [isAnalyzing, reanalyzingId, isGeneratingReport, isGeneratingDaily, isGeneratingConditionReport, isGeneratingHabit]);
 
       // ★ 로그인 세션 확인 + 유지 (한 번 로그인하면 계속 로그인 상태 유지)
       useEffect(() => {
@@ -816,10 +937,53 @@
           }
           await fetchExerciseBalance(activeRange.end);
         } catch (err) {
-          reportFatalError(err);
+          handleAiFailure(err, handleClassifyExercises);
         } finally {
           setIsClassifyingExercises(false);
         }
+      };
+
+      const fetchHabitReport = async () => {
+        if (!session) return;
+        const [latest, count] = await Promise.all([
+          withAuthRetry(() => sb.from('habit_reports').select('*').order('created_at', { ascending: false }).limit(1)),
+          withAuthRetry(() => sb.from('logs').select('id', { count: 'exact', head: true })),
+        ]);
+        if (latest.error) { setHabitReport(null); return; } // 카드만 비우고 페이지는 그대로 둔다
+        setHabitReport((latest.data || [])[0] || null);
+        setHabitRecordCount(count.error ? null : count.count);
+      };
+
+      useEffect(() => {
+        if (session && activeTab === 'analysis' && analysisView === 'longterm') fetchHabitReport();
+      }, [session, activeTab, analysisView]);
+
+      const handleGenerateHabitReport = () => {
+        if (isGeneratingHabit) return;
+        setIsGeneratingHabit(true);
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+        const timeoutId = setTimeout(() => {
+          controller.abort();
+          setIsGeneratingHabit(false);
+          showAiBusy(AI_SLOW_MESSAGE, AI_SLOW_DETAIL, handleGenerateHabitReport);
+        }, 90000);
+        (async () => {
+          try {
+            const res = await callAI('habitReport', {}, controller.signal);
+            clearTimeout(timeoutId);
+            setHabitReport(res);
+            setShowHabitDetail(false);
+          } catch (err) {
+            clearTimeout(timeoutId);
+            if (err.name === 'AbortError') return;
+            // 하루 1회 제한·기록 부족은 예상된 안내라 새로고침하지 않는다.
+            if (/하루 1회|건 이상 쌓이면/.test(err.message || '')) showNotice(err.message);
+            else handleAiFailure(err, handleGenerateHabitReport);
+          } finally {
+            setIsGeneratingHabit(false);
+          }
+        })();
       };
 
       const fetchConditionReports = async () => {
@@ -838,8 +1002,8 @@
           return;
         }
         if (!conditionLabels.includes(selectedCondition)) setSelectedCondition(conditionLabels[0]);
-        if (session && activeTab === 'analysis') fetchConditionReports();
-      }, [session, activeTab, profile?.disease]);
+        if (session && activeTab === 'analysis' && analysisView === 'longterm') fetchConditionReports();
+      }, [session, activeTab, analysisView, profile?.disease]);
 
       const fetchMealStatuses = async (date) => {
         const { data, error } = await withAuthRetry(() =>
@@ -1048,10 +1212,31 @@
         if (now - lastRefresh > AUTO_REFRESH_COOLDOWN_MS) {
           setSysError('일시적인 문제가 발생했어요. 잠시 후 새로고침할게요...');
           try { sessionStorage.setItem(AUTO_REFRESH_KEY, String(now)); } catch (e) {}
+          try {
+            sessionStorage.setItem(VIEW_STATE_KEY, JSON.stringify({
+              activeTab, currentDate, statsMode, longTermDrafts, followupDraft, openFollowupId, savedAt: Date.now(),
+            }));
+          } catch (e) { /* 보관하지 못해도 새로고침은 진행 */ }
           setTimeout(() => { window.location.reload(); }, 2000);
         } else {
           setSysError('문제가 계속되고 있어요. 화면을 새로고침해주세요.');
         }
+      };
+
+      // ★ v0.3.12 AI 요청 실패 처리: 일시 오류면 안내 + 다시 시도, 아니면 기존처럼 새로고침
+      const AI_SLOW_MESSAGE = 'AI 응답이 늦어지고 있어요. 잠시 후 다시 시도해 주세요.';
+      const AI_SLOW_DETAIL = '90초 안에 서버 응답이 없어 요청을 멈췄어요. (요청 시간 초과)';
+      const showAiBusy = (message, detail, retry) => {
+        setShowAiDetail(false);
+        setAiBusy({ message, detail: String(detail || ''), at: new Date().toLocaleString('ko-KR'), retry: retry || null });
+      };
+      const handleAiFailure = (err, retry) => {
+        if (isTemporaryAiError(err)) {
+          const detail = String(err?.message || err || '');
+          showAiBusy(temporaryAiMessage(detail), detail, retry);
+          return;
+        }
+        reportFatalError(err);
       };
 
       // ★ 계정 정보 저장 (프로필 + 계정명 + 비밀번호, 기존 SettingsForm 대체)
@@ -1298,7 +1483,7 @@
 
       // 오늘의 기록표에서 시작하면 해당 식사의 시간대 안에서는 현재 시각을,
       // 범위를 벗어나거나 과거 날짜이면 식사별 기준 시각을 제안한다.
-      const openMealDraft = (slot) => {
+      const openMealDraft = (slot, prefillText = '') => {
         const isToday = currentDate === formatDate(new Date());
         const nowTime = getCurrentTimeStr();
         const useCurrentTime = isToday && isTimeWithinMealRange(slot.category, nowTime);
@@ -1306,7 +1491,7 @@
         setIsMenuOpen(false);
         setDraft({
           isOpen: true, isEditMode: false, editLogId: null,
-          type: 'text', data: [], naturalText: '', memo: '', category: slot.category,
+          type: 'text', data: [], naturalText: prefillText, memo: '', category: slot.category,
           editDate: currentDate, editTime: suggestedTime,
           isCamera: false, bp_sys: '', bp_dia: '', pulse: '', sugar: '', weight: '', sleep_hours: '',
           entrySource: 'todayTable',
@@ -1332,6 +1517,71 @@
       const openBiometricsDraft = () => {
         setIsMenuOpen(false);
         setDraft({ isOpen: true, isEditMode: false, type: 'biometrics', data: [], naturalText: '', memo: '', category: '생체기록', editDate: currentDate, editTime: getCurrentTimeStr(), isCamera: false, entrySource: 'general', timeAutoMessage: '', timeConfirmed: false, bp_sys: '', bp_dia: '', pulse: '', sugar: '', weight: '', sleep_hours: '', existingFoodName: '', existingIngredients: [] });
+      };
+
+      // ★ v0.3.10 기록 카드의 복사: 내가 쓴 글과 끼니 종류를 오늘 지금 시각의 새 기록으로 연다(사진은 글로).
+      const handleCopyClick = (log) => {
+        const isCustom = !defaultCategories.includes(log.category);
+        setDraft({
+          isOpen: true, isEditMode: false, editLogId: null,
+          type: 'text', data: [], naturalText: getCopyText(log), memo: '', category: isCustom ? '직접입력' : log.category,
+          editDate: formatDate(new Date()), editTime: getCurrentTimeStr(), isCamera: false,
+          entrySource: 'copy', timeAutoMessage: '복사한 기록이에요. 날짜와 시간은 오늘 지금으로 바꿨어요.', timeConfirmed: false,
+          bp_sys: '', bp_dia: '', pulse: '', sugar: '', weight: '', sleep_hours: '',
+          existingFoodName: '', existingIngredients: []
+        });
+        if (isCustom) setCustomCategory(log.category);
+        setIsMenuOpen(false);
+      };
+
+      const fetchRecentBreakfasts = async (date) => {
+        const since = parseDate(date);
+        since.setDate(since.getDate() - 14);
+        const { data, error } = await withAuthRetry(() => sb.from('logs')
+          .select('id, log_date, log_time, category, food_name, ingredients, raw_input, image_urls')
+          .eq('category', '아침식사').gte('log_date', formatDate(since)).lt('log_date', date)
+          .order('log_date', { ascending: false }).order('log_time', { ascending: true }));
+        // 후보를 못 불러오면 버튼만 숨긴다(기록 화면은 그대로).
+        setRecentBreakfasts(error ? [] : buildRecentMealChoices((data || []).map(mapLogRow), date));
+      };
+
+      useEffect(() => {
+        setIsRecentMealOpen(false);
+        if (session && activeTab === 'home') fetchRecentBreakfasts(currentDate);
+      }, [session, activeTab, currentDate]);
+
+      useEffect(() => {
+        setPendingEntry(session ? readPendingEntry(session.user?.id) : null);
+      }, [session]);
+
+      const restorePendingEntry = () => {
+        if (!pendingEntry) return;
+        const p = pendingEntry.payload;
+        const isCustom = p.category !== '생체기록' && !defaultCategories.includes(p.category);
+        const bio = p.biometrics || {};
+        setDraft({
+          isOpen: true, isEditMode: !!pendingEntry.isEdit, editLogId: pendingEntry.editId || null,
+          type: p.type || 'text', data: p.base64Images || [], naturalText: p.naturalText || '', memo: p.memo || '',
+          category: isCustom ? '직접입력' : p.category, editDate: p.date, editTime: p.time, isCamera: false,
+          entrySource: pendingEntry.isEdit ? 'edit' : 'pending', timeAutoMessage: '', timeConfirmed: false,
+          bp_sys: bio.bp_sys ?? '', bp_dia: bio.bp_dia ?? '', pulse: bio.pulse ?? '', sugar: bio.sugar ?? '',
+          weight: bio.weight ?? '', sleep_hours: bio.sleep_hours ?? '',
+          existingFoodName: p.existingFoodName || '', existingIngredients: p.existingIngredients || []
+        });
+        if (isCustom) setCustomCategory(p.category);
+        setIsMenuOpen(false);
+      };
+
+      const retryPendingEntry = () => {
+        if (!pendingEntry) return;
+        const entry = pendingEntry;
+        setPendingEntry(null);
+        submitEntry(entry);
+      };
+
+      const discardPendingEntry = () => {
+        clearPendingEntry();
+        setPendingEntry(null);
       };
 
       const handleEditClick = (log) => {
@@ -1366,6 +1616,7 @@
         setIsGeneratingReport(false);
         setIsGeneratingDaily(false);
         setIsGeneratingConditionReport(false);
+        setIsGeneratingHabit(false);
         setSysError("");
         showNotice('요청을 취소했습니다.');
       };
@@ -1383,7 +1634,7 @@
           setOpenFollowupId(null);
           setFollowupDraft('');
         } catch (err) {
-          reportFatalError(err);
+          handleAiFailure(err, () => handleAskFollowup(logId)); // 쓴 질문은 그대로 남는다
         } finally {
           setSubmittingFollowupId(null);
         }
@@ -1401,7 +1652,7 @@
           setEditingPortionId(null);
           if (res.foodName) fetchGoalStats();
         } catch (err) {
-          reportFatalError(err);
+          handleAiFailure(err, () => handleAnswerPortion(logId, share));
         } finally {
           setSubmittingPortionId(null);
         }
@@ -1459,12 +1710,19 @@
           aiMode: profile?.aiMode || 'normal',
           existingFoodName: draft.existingFoodName, existingIngredients: draft.existingIngredients
         };
-        const isEdit = draft.isEditMode; const editId = draft.editLogId;
+        const entry = { userId: session?.user?.id || null, payload, isEdit: !!draft.isEditMode, editId: draft.editLogId || null, finalCategory, savedAt: new Date().toISOString() };
+        savePendingEntry(entry);
+        setPendingEntry(null);
 
         setDraft({ isOpen: false, isEditMode: false, type: '', data: [], naturalText: '', memo: '', category: '', entrySource: 'general', timeAutoMessage: '', timeConfirmed: false, bp_sys: '', bp_dia: '', pulse: '', sugar: '', weight: '', sleep_hours: '', existingFoodName: '', existingIngredients: [] });
         setSysError("");
         nudgeViewportRepaint(); // ★ [버그수정] 메인화면 복귀 직후 터치 좌표 어긋남 방지
+        submitEntry(entry);
+      };
 
+      // ★ v0.3.10 실제 저장 요청. 실패하면 보관해 둔 입력을 "저장되지 않은 기록"으로 다시 보여준다.
+      const submitEntry = (entry) => {
+        const { payload, isEdit, editId, finalCategory } = entry;
         const controller = new AbortController();
         abortControllerRef.current = controller;
 
@@ -1472,7 +1730,7 @@
         const timeoutId = setTimeout(() => {
           controller.abort();
           if (isEdit) setReanalyzingId(null); else setIsAnalyzing(false);
-          reportFatalError('서버 통신이 지연되고 있습니다.');
+          showAiBusy('AI 응답이 늦어 저장하지 못했어요. 홈 맨 위 "저장되지 않은 기록"에서 다시 시도해 주세요.', AI_SLOW_DETAIL, null);
         }, 90000);
 
         (async () => {
@@ -1481,6 +1739,7 @@
               setReanalyzingId(editId);
               const newData = await callAI('reanalyze', { id: editId, ...payload }, controller.signal);
               clearTimeout(timeoutId);
+              clearPendingEntry();
               if (newData.date !== currentDate && activeTab === 'home') setLogs(prev => prev.filter(item => item.id !== editId));
               else setLogs(prev => prev.map(item => item.id === editId ? { ...item, ...newData } : item));
               setFeedbackPopupLog(newData);
@@ -1492,6 +1751,7 @@
               setIsAnalyzing(true);
               const newLog = await callAI('analyze', payload, controller.signal);
               clearTimeout(timeoutId);
+              clearPendingEntry();
               if (newLog.date === currentDate && activeTab === 'home') setLogs(prev => [newLog, ...prev]);
               setFeedbackPopupLog(newLog);
               await clearMealStatusForCategory(finalCategory, newLog.date);
@@ -1502,8 +1762,15 @@
             if (activeTab !== 'home') await fetchPeriodLogs(activeRange.start, activeRange.end);
           } catch (err) {
             clearTimeout(timeoutId);
+            setPendingEntry(readPendingEntry(entry.userId));
             if (err.name === 'AbortError') return; // 사용자가 취소했거나 위 안전장치로 중단된 경우 — 상태는 이미 정리됨
-            reportFatalError(err);
+            if (isTemporaryAiError(err)) {
+              const detail = String(err?.message || err || '');
+              showAiBusy(`${temporaryAiMessage(detail)} 입력한 기록은 홈 맨 위 "저장되지 않은 기록"에 있어요.`, detail, null);
+              if (activeTab !== 'home') setActiveTab('home');
+            } else {
+              reportFatalError(err);
+            }
             if (isEdit) setReanalyzingId(null); else setIsAnalyzing(false);
           }
         })();
@@ -1539,7 +1806,7 @@
         const timeoutId = setTimeout(() => {
           controller.abort();
           setIsGeneratingReport(false);
-          reportFatalError('리포트 생성에 시간이 오래 걸립니다.');
+          showAiBusy(AI_SLOW_MESSAGE, AI_SLOW_DETAIL, handleGeneratePeriodReport);
         }, 90000);
 
         let summaryData = "";
@@ -1565,7 +1832,7 @@
           } catch (err) {
             clearTimeout(timeoutId);
             if (err.name === 'AbortError') return;
-            reportFatalError(err); setIsGeneratingReport(false);
+            handleAiFailure(err, handleGeneratePeriodReport); setIsGeneratingReport(false);
           }
         })();
       };
@@ -1578,7 +1845,7 @@
         const timeoutId = setTimeout(() => {
           controller.abort();
           setIsGeneratingConditionReport(false);
-          reportFatalError('기저질환 분석에 시간이 오래 걸립니다.');
+          showAiBusy(AI_SLOW_MESSAGE, AI_SLOW_DETAIL, handleGenerateConditionReport);
         }, 90000);
 
         (async () => {
@@ -1591,7 +1858,7 @@
           } catch (err) {
             clearTimeout(timeoutId);
             if (err.name === 'AbortError') return;
-            reportFatalError(err);
+            handleAiFailure(err, handleGenerateConditionReport);
             setIsGeneratingConditionReport(false);
           }
         })();
@@ -1606,7 +1873,7 @@
         const timeoutId = setTimeout(() => {
           controller.abort();
           setIsGeneratingDaily(false);
-          reportFatalError('하루 평가 통신이 지연되고 있습니다.');
+          showAiBusy(AI_SLOW_MESSAGE, AI_SLOW_DETAIL, handleGenerateDailyReport);
         }, 90000);
 
         let summaryLines = logs.map(l => {
@@ -1622,7 +1889,7 @@
           } catch (err) {
             clearTimeout(timeoutId);
             if (err.name === 'AbortError') return;
-            reportFatalError(err); setIsGeneratingDaily(false);
+            handleAiFailure(err, handleGenerateDailyReport); setIsGeneratingDaily(false);
           }
         })();
       };
@@ -1800,6 +2067,81 @@
       const selectedConditionHistory = conditionReports.filter(report => report.conditionKey === selectedConditionKey);
       const latestConditionReport = selectedConditionHistory[0] || null;
       const latestConditionData = latestConditionReport?.reportData || null;
+
+      // ★ v0.3.11 장기 분석 결과에 대한 질문. 서버(diet-ai longTermQuestion)와 DB도 2회로 제한한다.
+      const LONG_TERM_QUESTION_LIMIT = 2;
+      useEffect(() => {
+        const shown = [['habit', habitReport?.id], ['condition', latestConditionReport?.id]].filter(([, id]) => id);
+        if (!session || !isLongTermView || !shown.length) return;
+        (async () => {
+          const { data, error } = await withAuthRetry(() => sb.from('long_term_followups')
+            .select('*').in('report_id', shown.map(([, id]) => id)).order('seq', { ascending: true }));
+          if (error) return; // 질문 목록만 못 보여줄 뿐 화면은 그대로
+          setLongTermFollowups(prev => {
+            const next = { ...prev };
+            shown.forEach(([kind, id]) => {
+              next[`${kind}:${id}`] = (data || []).filter(row => row.report_kind === kind && row.report_id === id);
+            });
+            return next;
+          });
+        })();
+      }, [session, isLongTermView, habitReport?.id, latestConditionReport?.id]);
+
+      const handleAskLongTerm = async (kind, reportId) => {
+        const key = `${kind}:${reportId}`;
+        const question = String(longTermDrafts[key] || '').trim();
+        if (!question || askingLongTermKey) return;
+        setAskingLongTermKey(key);
+        try {
+          const row = await callAI('longTermQuestion', { kind, reportId, question });
+          setLongTermFollowups(prev => ({ ...prev, [key]: [...(prev[key] || []), row] }));
+          setLongTermDrafts(prev => ({ ...prev, [key]: '' }));
+        } catch (err) {
+          // 2회를 다 쓴 경우는 예상된 안내라 새로고침하지 않는다.
+          if (/회까지 할 수 있어요/.test(err.message || '')) showNotice(err.message);
+          else handleAiFailure(err, () => handleAskLongTerm(kind, reportId)); // 쓴 질문은 그대로 남는다
+        } finally {
+          setAskingLongTermKey(null);
+        }
+      };
+
+      const renderLongTermQuestions = (kind, reportId, placeholder) => {
+        if (!reportId) return null;
+        const key = `${kind}:${reportId}`;
+        const rows = longTermFollowups[key] || [];
+        const left = Math.max(0, LONG_TERM_QUESTION_LIMIT - rows.length);
+        const busy = askingLongTermKey === key;
+        const draftText = longTermDrafts[key] || '';
+        return (
+          <div className="mt-3 space-y-2" data-long-term-questions={kind}>
+            {rows.map(row => (
+              <div key={row.id || row.seq} className="bg-indigo-50 rounded-xl p-3">
+                <p className="text-xs font-bold text-indigo-500 mb-1 break-keep">🤔 {row.question}</p>
+                <p className="text-sm text-indigo-800 whitespace-pre-wrap leading-snug break-keep">{row.answer}</p>
+              </div>
+            ))}
+            {left > 0 ? (
+              <div className="flex flex-col gap-2">
+                <p className="text-xs font-bold text-gray-600">🤔 이 분석에 대해 더 물어보기 <span className="font-normal text-gray-400">({LONG_TERM_QUESTION_LIMIT}회 중 {left}회 남음)</span></p>
+                <textarea
+                  value={draftText}
+                  onChange={e => { const value = e.target.value; setLongTermDrafts(prev => ({ ...prev, [key]: value })); }}
+                  placeholder={placeholder}
+                  rows={2}
+                  maxLength={300}
+                  className="w-full text-sm bg-gray-50 border border-gray-200 rounded-xl p-2.5 outline-none focus:border-indigo-500 resize-none"
+                />
+                <button type="button" disabled={busy || !draftText.trim()} onClick={() => handleAskLongTerm(kind, reportId)}
+                  className="bg-indigo-600 text-white text-xs font-bold py-2 rounded-lg disabled:opacity-60">
+                  {busy ? '답변을 만드는 중...' : '질문하기'}
+                </button>
+              </div>
+            ) : (
+              <p className="text-[11px] text-gray-400 leading-relaxed">이 분석에 대한 질문 {LONG_TERM_QUESTION_LIMIT}회를 모두 사용했어요. 다시 분석하면 새로 물어볼 수 있어요.</p>
+            )}
+          </div>
+        );
+      };
       const conditionStatusMeta = {
         improving: { label: '좋아지는 흐름', color: 'bg-emerald-100 text-emerald-700' },
         stable: { label: '비슷한 흐름', color: 'bg-blue-100 text-blue-700' },
@@ -1811,9 +2153,132 @@
         activePeriodGoal.weight_target, activePeriodGoal.bp_sys_target, activePeriodGoal.bp_dia_target,
         activePeriodGoal.sugar_target].some(value => Number(value) > 0));
 
+      const openLogDate = (date) => {
+        setOpenTagGroup(null);
+        setCurrentDate(date);
+        setActiveTab('home');
+        window.scrollTo(0, 0);
+      };
+
+      // ★ v0.3.9 습관 지표의 월별 흐름. 숫자는 모두 서버(diet-ai habitReport)가 센 값이다.
+      const habitTrendBadge = (snapshot, key) => {
+        const metric = snapshot?.metrics?.[key];
+        const direction = snapshot?.trends?.[key]?.direction;
+        if (!metric || !direction || direction === 'insufficient') return null;
+        if (direction === 'flat') return <span className="text-[10px] font-bold text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">최근 비슷함</span>;
+        if (!metric.good) return <span className="text-[10px] font-bold text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">최근 {direction === 'up' ? '늘어남' : '줄어듦'}</span>;
+        const better = metric.good === direction;
+        return <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${better ? 'text-emerald-700 bg-emerald-100' : 'text-amber-800 bg-amber-100'}`}>최근 {better ? '좋아지는 중' : '나빠지는 중'}</span>;
+      };
+
+      const habitSeries = (snapshot, key, monthsShown = 4) => (snapshot?.months || []).slice(-monthsShown).map(m => {
+        const value = m.values?.[key];
+        return `${Number(m.month.slice(5))}월 ${value === null || value === undefined ? '-' : value}${m.partial ? '*' : ''}`;
+      }).join(' · ');
+
+      const HabitReportCard = () => {
+        const today = formatDate(new Date());
+        const report = habitReport?.report_data || null;
+        const snapshot = habitReport?.snapshot || null;
+        const analyzedToday = habitReport?.report_date === today;
+        const notEnough = habitRecordCount !== null && habitRecordCount < 30;
+        const detailKeys = snapshot ? Object.keys(snapshot.metrics || {}) : [];
+        const detailMonths = (snapshot?.months || []).slice(-6);
+        const renderHabit = (item, good) => (
+          <div key={item.metric} className={`rounded-2xl px-3 py-2.5 border ${good ? 'bg-emerald-50 border-emerald-100' : 'bg-amber-50 border-amber-100'}`}>
+            <div className="flex items-start justify-between gap-2">
+              <span className={`text-sm font-bold break-keep ${good ? 'text-emerald-800' : 'text-amber-900'}`}>{good ? '✓' : '!'} {item.title}</span>
+              <span className="shrink-0">{habitTrendBadge(snapshot, item.metric)}</span>
+            </div>
+            <p className="text-[11px] text-gray-500 mt-1">{snapshot?.metrics?.[item.metric]?.label}: {habitSeries(snapshot, item.metric)}</p>
+            {item.detail && <p className="text-xs text-gray-700 leading-snug mt-1 break-keep">{item.detail}</p>}
+          </div>
+        );
+        return (
+          <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100" data-habit-report>
+            <div className="mb-3">
+              <h3 className="font-bold text-gray-800">🌱 내 습관 분석</h3>
+              <p className="text-xs text-gray-500 mt-1 leading-relaxed">쌓인 기록 전체(최근 12개월까지)에서 꾸준히 이어지는 좋은 습관과 계속되는 습관을 찾아요.</p>
+            </div>
+
+            {report ? (
+              <div className="space-y-3">
+                <p className="text-[11px] text-gray-400">
+                  {habitReport.report_date} 분석 · 기록 {habitReport.record_count}건 · {habitReport.window_start} ~ {habitReport.window_end}
+                </p>
+                <p className="text-sm text-gray-700 leading-relaxed break-keep">{report.summary}</p>
+                {report.goodHabits?.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-xs font-bold text-emerald-700">자리 잡은 좋은 습관</p>
+                    {report.goodHabits.map(item => renderHabit(item, true))}
+                  </div>
+                )}
+                {report.badHabits?.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-xs font-bold text-amber-800">계속되는 주의 습관</p>
+                    {report.badHabits.map(item => renderHabit(item, false))}
+                  </div>
+                )}
+                {report.advice?.length > 0 && (
+                  <div className="bg-indigo-50 rounded-2xl p-3 space-y-1">
+                    {report.advice.map((a, i) => <p key={i} className="text-xs text-indigo-900 leading-snug break-keep">💡 {a}</p>)}
+                  </div>
+                )}
+                <p className="text-[10px] text-gray-400">* 표시는 그 달의 일부 기간만 포함된 숫자예요.</p>
+
+                <button type="button" onClick={() => setShowHabitDetail(!showHabitDetail)} className="text-xs font-bold text-gray-500">
+                  {showHabitDetail ? '월별 지표 접기 ▲' : '월별 지표 자세히 보기 ▼'}
+                </button>
+                {showHabitDetail && (
+                  <div className="overflow-x-auto -mx-1" data-habit-detail>
+                    <table className="text-[11px] text-gray-600 min-w-full">
+                      <thead>
+                        <tr className="text-gray-400">
+                          <th className="text-left font-bold py-1 pr-2 whitespace-nowrap">지표</th>
+                          {detailMonths.map(m => <th key={m.month} className="font-bold py-1 px-1.5 whitespace-nowrap">{Number(m.month.slice(5))}월{m.partial ? '*' : ''}</th>)}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr className="border-t border-gray-100">
+                          <td className="py-1 pr-2 whitespace-nowrap">기록한 날</td>
+                          {detailMonths.map(m => <td key={m.month} className="py-1 px-1.5 text-center">{m.recordedDays}</td>)}
+                        </tr>
+                        {detailKeys.map(key => (
+                          <tr key={key} className="border-t border-gray-100">
+                            <td className="py-1 pr-2 whitespace-nowrap">{snapshot.metrics[key].label}</td>
+                            {detailMonths.map(m => {
+                              const v = m.values?.[key];
+                              return <td key={m.month} className="py-1 px-1.5 text-center">{v === null || v === undefined ? '-' : v}</td>;
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {renderLongTermQuestions('habit', habitReport.id, '예: 야식을 줄이려면 뭐부터 하면 좋을까요?')}
+              </div>
+            ) : (
+              <div className="bg-gray-50 rounded-2xl p-4 text-sm text-gray-500 leading-relaxed">
+                {notEnough
+                  ? `기록이 30건 이상 쌓이면 분석할 수 있어요. (현재 ${habitRecordCount}건)`
+                  : '아직 습관 분석을 하지 않았어요. 아래 버튼을 누르면 전체 기록을 분석해요.'}
+              </div>
+            )}
+
+            <button
+              type="button" onClick={handleGenerateHabitReport} disabled={isGeneratingHabit || analyzedToday || notEnough}
+              className="w-full mt-4 bg-emerald-600 text-white font-bold py-3.5 rounded-xl disabled:opacity-50 active:scale-[0.99] transition"
+            >{analyzedToday ? '오늘 분석 완료 · 내일 다시 분석할 수 있어요' : report ? '🔄 최신 기록으로 다시 분석하기' : '✨ 내 습관 분석받기'}</button>
+            <p className="text-[10px] text-gray-400 mt-1.5 text-center">하루 1회 분석할 수 있어요</p>
+          </div>
+        );
+      };
+
       const HealthTagSummary = ({ items, title }) => {
         const summary = summarizeHealthTags(items);
         if (!summary.length) return null;
+        const visible = showAllTagGroups ? summary : summary.slice(0, 6);
         return (
           <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100" data-health-tag-summary>
             <div className="flex items-center justify-between gap-3 mb-3">
@@ -1824,16 +2289,40 @@
               <span className="text-[11px] font-bold text-gray-500 bg-gray-100 px-2 py-1 rounded-lg whitespace-nowrap">총 {summary.reduce((sum, item) => sum + item.count, 0)}건</span>
             </div>
             <div className="grid grid-cols-1 gap-2">
-              {summary.slice(0, 6).map(item => (
-                <div key={`${item.label}-${item.polarity}`} className={`rounded-2xl px-3 py-2.5 border ${item.polarity === 'helpful' ? 'bg-emerald-50 border-emerald-100' : 'bg-amber-50 border-amber-100'}`}>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className={`text-xs font-bold whitespace-nowrap ${item.polarity === 'helpful' ? 'text-emerald-700' : 'text-amber-800'}`}>{item.polarity === 'helpful' ? '✓' : '!'} {item.label}</span>
-                    <span className="text-[11px] font-bold text-gray-500 whitespace-nowrap">{item.count}회</span>
-                  </div>
-                  {item.foods.size > 0 && <p className="text-[11px] text-gray-500 mt-1 truncate">{[...item.foods].slice(0, 3).join(' · ')}</p>}
+              {visible.map(item => {
+                const openKey = `${title}|${item.key}`;
+                const isOpen = openTagGroup === openKey;
+                return (
+                <div key={item.key} data-health-tag-group className={`rounded-2xl border ${item.polarity === 'helpful' ? 'bg-emerald-50 border-emerald-100' : 'bg-amber-50 border-amber-100'}`}>
+                  <button type="button" onClick={() => setOpenTagGroup(isOpen ? null : openKey)} className="w-full text-left px-3 py-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className={`text-xs font-bold whitespace-nowrap ${item.polarity === 'helpful' ? 'text-emerald-700' : 'text-amber-800'}`}>{item.polarity === 'helpful' ? '✓' : '!'} {item.label}</span>
+                      <span className="text-[11px] font-bold text-gray-500 whitespace-nowrap">{item.count}회 {isOpen ? '▲' : '▼'}</span>
+                    </div>
+                    {!isOpen && item.foods.size > 0 && <p className="text-[11px] text-gray-500 mt-1 truncate">{[...item.foods].slice(0, 3).join(' · ')}</p>}
+                  </button>
+                  {isOpen && (
+                    <div className="px-3 pb-3 space-y-1.5" data-health-tag-entries>
+                      {item.entries.map((entry, index) => (
+                        <button key={`${entry.logId}-${index}`} type="button" onClick={() => openLogDate(entry.date)}
+                          className="w-full text-left bg-white/80 rounded-xl px-2.5 py-2 active:opacity-70">
+                          <p className="text-[11px] text-gray-400">{entry.date.slice(5).replace('-', '/')} {entry.category} {entry.time}</p>
+                          <p className="text-xs font-bold text-gray-700 break-keep">{entry.foodName}</p>
+                          {entry.evidence && <p className="text-xs text-gray-600 leading-snug break-keep mt-0.5">{entry.evidence}</p>}
+                        </button>
+                      ))}
+                      <p className="text-[10px] text-gray-400 pt-0.5">항목을 누르면 그날 기록으로 이동해요</p>
+                    </div>
+                  )}
                 </div>
-              ))}
+                );
+              })}
             </div>
+            {summary.length > 6 && (
+              <button type="button" onClick={() => setShowAllTagGroups(!showAllTagGroups)} className="w-full mt-2 text-xs font-bold text-gray-500 py-1.5">
+                {showAllTagGroups ? '접기' : `전체 ${summary.length}개 항목 보기`}
+              </button>
+            )}
           </div>
         );
       };
@@ -2101,6 +2590,14 @@
               </div>
             </div>
 
+            {activeTab === 'analysis' && (
+              <div className="flex gap-2 mb-4 bg-indigo-50 p-1 rounded-xl" data-analysis-view-tabs>
+                <button type="button" onClick={() => setAnalysisView('period')} className={`flex-1 py-2 text-sm font-bold rounded-lg transition ${analysisView === 'period' ? 'bg-white shadow-sm text-indigo-600' : 'text-gray-500'}`}>기간 분석</button>
+                <button type="button" onClick={() => setAnalysisView('longterm')} className={`flex-1 py-2 text-sm font-bold rounded-lg transition ${analysisView === 'longterm' ? 'bg-white shadow-sm text-indigo-600' : 'text-gray-500'}`}>장기 분석</button>
+              </div>
+            )}
+
+            {!isLongTermView && (
             <div className="flex justify-between items-center bg-gray-50 p-2 rounded-xl border border-gray-200">
               <button onClick={() => changeDate(-1)} className="p-3 text-gray-500 hover:text-black font-extrabold text-lg">◀</button>
 
@@ -2125,8 +2622,9 @@
 
               <button onClick={() => changeDate(1)} className="p-3 text-gray-500 hover:text-black font-extrabold text-lg">▶</button>
             </div>
+            )}
 
-            {activeTab !== 'home' && (
+            {activeTab !== 'home' && !isLongTermView && (
               <div className="flex gap-2 mt-4 bg-gray-100 p-1 rounded-xl">
                 <button onClick={() => setStatsMode('week')} className={`flex-1 py-2 text-sm font-bold rounded-lg transition ${statsMode === 'week' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}>주간</button>
                 <button onClick={() => setStatsMode('month')} className={`flex-1 py-2 text-sm font-bold rounded-lg transition ${statsMode === 'month' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}>월간</button>
@@ -2138,6 +2636,26 @@
 
             {activeTab === 'home' && (
               <>
+                {pendingEntry && (() => {
+                  const p = pendingEntry.payload;
+                  const photoCount = (p.base64Images || []).length;
+                  const preview = p.type === 'biometrics' ? '생체 수치' : (String(p.naturalText || p.memo || '').trim() || (photoCount ? `사진 ${photoCount}장` : ''));
+                  return (
+                    <div className="bg-amber-50 border border-amber-200 rounded-3xl p-4" data-pending-entry>
+                      <p className="text-sm font-bold text-amber-900">⚠️ 저장되지 않은 기록이 있어요</p>
+                      <p className="text-xs text-amber-800 mt-1 break-keep">
+                        {String(p.date || '').slice(5).replace('-', '/')} {p.category} {p.time} · {preview.length > 40 ? preview.slice(0, 40) + '…' : preview}
+                      </p>
+                      {pendingEntry.photosDropped && <p className="text-[11px] text-amber-700 mt-1">사진은 용량 때문에 보관하지 못했어요. 고치기에서 사진을 다시 넣어 주세요.</p>}
+                      <p className="text-[11px] text-gray-500 mt-1">이미 같은 기록이 저장돼 있으면 버리기를 눌러 주세요.</p>
+                      <div className="grid grid-cols-3 gap-2 mt-3">
+                        <button type="button" onClick={retryPendingEntry} className="text-xs font-bold py-2 rounded-lg bg-amber-500 text-white">다시 시도</button>
+                        <button type="button" onClick={restorePendingEntry} className="text-xs font-bold py-2 rounded-lg bg-white border border-amber-200 text-amber-800">고치기</button>
+                        <button type="button" onClick={discardPendingEntry} className="text-xs font-bold py-2 rounded-lg bg-white border border-gray-200 text-gray-500">버리기</button>
+                      </div>
+                    </div>
+                  );
+                })()}
                 <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100">
                   {dailyReport ? (
                     <div className="flex gap-4 items-center">
@@ -2205,6 +2723,24 @@
                             {matches.length > 0 && (
                               <MealRecordSummary matches={matches} />
                             )}
+                            {slot.key === 'breakfast' && status === 'missing' && recentBreakfasts.length > 0 && (
+                              <div data-recent-meals>
+                                <button type="button" onClick={() => setIsRecentMealOpen(!isRecentMealOpen)} className="mt-1 text-[11px] font-bold text-blue-600">
+                                  ↺ 최근 아침 불러오기 {isRecentMealOpen ? '▲' : '▼'}
+                                </button>
+                                {isRecentMealOpen && (
+                                  <div className="mt-1.5 space-y-1">
+                                    {recentBreakfasts.map(choice => (
+                                      <button key={choice.date} type="button" onClick={() => { setIsRecentMealOpen(false); openMealDraft(slot, choice.text); }}
+                                        className="w-full text-left bg-blue-50 rounded-lg px-2 py-1.5 active:opacity-70">
+                                        <span className="text-[11px] font-bold text-blue-700 mr-1.5">{choice.label}</span>
+                                        <span className="text-xs text-gray-700 break-keep">{choice.text}</span>
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
                           <div className="shrink-0 flex items-center gap-1.5">
                             <button type="button" onClick={() => openMealDraft(slot)}
@@ -2259,6 +2795,9 @@
                             </div>
                           ) : (
                             <div className="flex gap-2">
+                              {log.category !== '생체기록' && (
+                                <button onClick={() => handleCopyClick(log)} aria-label="오늘 기록으로 복사" title="오늘 기록으로 복사" className="text-gray-400 hover:text-green-600 bg-gray-50 p-1 rounded-lg">📋</button>
+                              )}
                               <button onClick={() => handleEditClick(log)} className="text-gray-400 hover:text-blue-500 bg-gray-50 p-1 rounded-lg">✏️</button>
                               <button onClick={() => setDeleteConfirmId(log.id)} className="text-gray-400 hover:text-red-500 bg-red-50 p-1 rounded-lg">🗑️</button>
                             </div>
@@ -2350,9 +2889,13 @@
 
             {activeTab !== 'home' && (
               <div className="space-y-6 animate-fade-in">
-                {activeTab === 'analysis' && (
-                  <>
+                {activeTab === 'analysis' && analysisView === 'period' && (
                 <HealthTagSummary items={periodLogs} title={`${statsMode === 'month' ? '월간' : '주간'} 건강 영향`} />
+                )}
+                {isLongTermView && (
+                  <>
+                <p className="text-xs text-gray-500 px-1" data-longterm-note>장기 분석은 주간·월간 선택과 상관없이 쌓인 기록 전체를 봅니다.</p>
+                {HabitReportCard()}
                 <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100" data-condition-report>
                   <div className="flex items-start justify-between gap-3 mb-4">
                     <div className="min-w-0">
@@ -2437,6 +2980,7 @@
                             )}
                           </div>
                           <p className="text-[11px] text-gray-400 leading-relaxed">분석일 {new Date(latestConditionReport.createdAt).toLocaleDateString('ko-KR')} · 기록된 날만 근거로 사용하며 미기록일은 판단하지 않습니다.</p>
+                          {renderLongTermQuestions('condition', latestConditionReport.id, `예: ${selectedCondition}에 가장 영향이 큰 습관은 뭐예요?`)}
                         </div>
                       ) : (
                         <div className="bg-gray-50 rounded-2xl p-4 text-sm text-gray-500 leading-relaxed mb-4">
@@ -3010,7 +3554,7 @@
                   </>
                 )}
 
-                {activeTab === 'analysis' && (
+                {activeTab === 'analysis' && analysisView === 'period' && (
                 <div className="bg-gradient-to-br from-blue-600 to-indigo-700 rounded-3xl p-1 shadow-md">
                   <div className="bg-gray-50 rounded-[22px] p-4 h-full">
                     <div className="px-2 pt-2 mb-4">
@@ -3097,6 +3641,39 @@
                <span className="text-sm font-medium">{sysError}</span>
                <button onClick={()=>setSysError("")} className="ml-4 font-bold text-lg">✕</button>
              </div>
+          )}
+
+          {aiBusy && (
+            <div className="fixed top-5 left-5 right-5 bg-amber-50 border border-amber-300 text-amber-900 p-4 rounded-2xl shadow-xl z-[100] animate-fade-in" data-ai-busy role="alert">
+              <p className="text-sm font-bold break-keep">⚠️ {aiBusy.message}</p>
+              <p className="text-[11px] text-amber-700 mt-1">입력한 내용과 보던 화면은 그대로예요.</p>
+              {aiBusy.detail && (
+                <div className="mt-2">
+                  <button type="button" onClick={() => setShowAiDetail(!showAiDetail)} className="text-[11px] font-bold text-amber-800 underline">
+                    {showAiDetail ? '오류 전문 닫기' : '오류 전문 보기'}
+                  </button>
+                  {showAiDetail && (
+                    <div className="mt-1.5" data-ai-error-detail>
+                      <pre className="text-[11px] text-gray-700 bg-white border border-amber-200 rounded-lg p-2 max-h-40 overflow-y-auto whitespace-pre-wrap break-all font-mono">{`[${aiBusy.at}]\n${aiBusy.detail}`}</pre>
+                      <button type="button"
+                        onClick={async () => {
+                          try { await navigator.clipboard.writeText(`[${aiBusy.at}]\n${aiBusy.detail}`); showNotice('오류 전문을 복사했어요.'); }
+                          catch (e) { showNotice('복사하지 못했어요. 위 글을 길게 눌러 복사해 주세요.'); }
+                        }}
+                        className="mt-1 text-[11px] font-bold text-amber-800">📋 오류 전문 복사</button>
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className="flex gap-2 mt-3">
+                {aiBusy.retry && (
+                  <button type="button" onClick={() => { const retry = aiBusy.retry; setAiBusy(null); retry(); }}
+                    className="flex-1 text-xs font-bold py-2 rounded-lg bg-amber-500 text-white">다시 시도</button>
+                )}
+                <button type="button" onClick={() => setAiBusy(null)}
+                  className="flex-1 text-xs font-bold py-2 rounded-lg bg-white border border-amber-200 text-amber-800">닫기</button>
+              </div>
+            </div>
           )}
 
           {sysNotice && (
@@ -3187,13 +3764,14 @@
             </div>
           )}
 
-          {(isAnalyzing || reanalyzingId || isGeneratingReport || isGeneratingDaily || isGeneratingConditionReport) && (
+          {(isAnalyzing || reanalyzingId || isGeneratingReport || isGeneratingDaily || isGeneratingConditionReport || isGeneratingHabit) && (
             <div className="fixed inset-0 z-[100] bg-black/70 flex flex-col items-center justify-center text-white backdrop-blur-sm touch-none px-6">
               <div className="loader border-4 border-white border-t-transparent w-16 h-16 mb-6"></div>
               <p className="text-xl font-bold animate-pulse text-center">
                 {isGeneratingReport ? '🤖 AI가 거시적 데이터를 분석 중입니다...' :
                  isGeneratingDaily ? '🤖 AI가 하루 총평을 작성 중입니다...' :
                  isGeneratingConditionReport ? '🧭 최근 2개월 생활습관을 분석 중입니다...' :
+                 isGeneratingHabit ? '🌱 전체 기록에서 습관을 찾는 중입니다...' :
                  '🤖 AI가 꼼꼼하게 분석 중입니다...'}
               </p>
               {loadingElapsed < 30 ? (
