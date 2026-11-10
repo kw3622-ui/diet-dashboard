@@ -1,0 +1,17 @@
+{
+  "id": "./?app=diet-dashboard",
+  "name": "식단 기록장",
+  "short_name": "식단 기록장",
+  "description": "식단·운동·생체 기록과 AI 건강 코칭",
+  "lang": "ko",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f9fafb",
+  "theme_color": "#ffffff",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
