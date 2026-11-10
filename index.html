@@ -725,8 +725,8 @@
         || String(a.created_at || '').localeCompare(String(b.created_at || ''));
     }
 
-    // 연속 일수·최고 연속·최근 30일 달성률·최근 7일. 건너뛴 날은 연속을 끊지 않고 계산에서 뺀다.
-    // 오늘 아직 안 한 루틴은 연속을 끊지 않는다(어제까지로 센다).
+    // 연속 일수·최고 연속·최근 30일 달성률·이번 주(월~일) 진행. 건너뛴 날은 연속을 끊지 않고 계산에서 뺀다.
+    // 오늘 아직 안 한 루틴은 연속을 끊지 않는다(어제까지로 센다). 달성률·이번 주 진행에는 오늘 할 것도 포함한다.
     function computeRoutineStats(routine, getCheck, isExerciseDay, today, lookbackDays = ROUTINE_LOOKBACK_DAYS) {
       const first = parseDate(today);
       first.setDate(first.getDate() - lookbackDays);
@@ -751,16 +751,30 @@
         else if (state !== 'skipped' && date !== today) run = 0;
       });
       const since30 = parseDate(today); since30.setDate(since30.getDate() - 29);
-      const window = days.filter(d => d.date >= formatDate(since30) && d.state !== 'skipped' && !(d.date === today && d.state !== 'done'));
+      const window = days.filter(d => d.date >= formatDate(since30) && d.state !== 'skipped');
       const score = window.length ? Math.round(window.filter(d => d.state === 'done').length / window.length * 100) : null;
-      const last7 = [];
-      for (let i = 6; i >= 0; i--) {
-        const d = parseDate(today); d.setDate(d.getDate() - i);
+      // 이번 주 월~일: 할 날이 아님(none) / 앞으로(future) / 오늘 아직(today) / 못 함(missed) / 완료 / 건너뜀
+      const range = getWeekRange(today);
+      const week = [];
+      for (let d = parseDate(range.start); formatDate(d) <= range.end; d.setDate(d.getDate() + 1)) {
         const date = formatDate(d);
-        const found = days.find(x => x.date === date);
-        last7.push({ date, state: found ? (found.state === 'todo' || found.state === 'progress' ? (date === today ? 'today' : 'missed') : found.state) : 'none' });
+        if (!isRoutineDue(routine, date)) { week.push({ date, state: 'none' }); continue; }
+        if (date > today) { week.push({ date, state: getCheck(routine.id, date)?.status === 'skipped' ? 'skipped' : 'future' }); continue; }
+        const state = routineDayState(routine, getCheck(routine.id, date), isExerciseDay(date));
+        week.push({ date, state: state === 'done' || state === 'skipped' ? state : date === today ? 'today' : 'missed' });
       }
-      return { current, best, score, totalDone, last7 };
+      const weekDue = week.filter(x => x.state !== 'none' && x.state !== 'skipped').length;
+      const weekDone = week.filter(x => x.state === 'done').length;
+      // 이번 주에 할 날이 없으면(매월·n일마다) 다음 할 날을 알려 준다.
+      let nextDue = null;
+      if (!weekDue && !routine.archived_at) {
+        const d = parseDate(today);
+        for (let i = 0; i < 400; i++) {
+          d.setDate(d.getDate() + 1);
+          if (isRoutineDue(routine, formatDate(d))) { nextDue = formatDate(d); break; }
+        }
+      }
+      return { current, best, score, totalDone, week, weekDue, weekDone, nextDue };
     }
 
     // 오늘(보고 있는 날짜)의 루틴: 해야 하는 것만, 시간대 순. 오늘이면 지금 시간대부터 보여 주고 지난 시간대는 뒤로.
@@ -1098,7 +1112,8 @@
       );
     }
 
-    const ROUTINE_DOT = { done: 'bg-emerald-500', skipped: 'bg-gray-300', missed: 'bg-red-200', today: 'bg-white border border-emerald-300', none: 'bg-gray-100' };
+    const ROUTINE_DOT = { done: 'bg-emerald-500', skipped: 'bg-gray-300', missed: 'bg-red-200', today: 'bg-white border-2 border-emerald-400', future: 'bg-white border border-gray-300', none: 'bg-gray-100' };
+    const ROUTINE_WEEK_LABELS = ['월', '화', '수', '목', '금', '토', '일'];
 
     // 루틴 상세: 한 달 달력 + 기록
     function RoutineDetail({ routine, today, getCheck, isExerciseDay, stats, onEdit, onArchiveToggle, onDelete, onClose }) {
@@ -1171,17 +1186,6 @@
       const active = (routines || []).filter(r => !r.archived_at).sort(compareRoutines);
       const archived = (routines || []).filter(r => r.archived_at);
       const statsOf = (r) => computeRoutineStats(r, getCheck, isExerciseDay, today);
-      const week = getWeekRange(today);
-      let weekDue = 0, weekDone = 0;
-      active.forEach(r => {
-        for (let d = parseDate(week.start); formatDate(d) <= today && formatDate(d) <= week.end; d.setDate(d.getDate() + 1)) {
-          const date = formatDate(d);
-          if (!isRoutineDue(r, date)) continue;
-          const s = routineDayState(r, getCheck(r.id, date), isExerciseDay(date));
-          if (s === 'skipped' || (date === today && s !== 'done')) continue;
-          weekDue++; if (s === 'done') weekDone++;
-        }
-      });
       const detail = (routines || []).find(r => r.id === detailId);
       const row = (r) => {
         const st = statsOf(r);
@@ -1190,10 +1194,21 @@
             <button type="button" onClick={() => setDetailId(r.id)} className="flex-1 min-w-0 text-left">
               <p className="text-sm font-bold text-gray-800 break-keep">{r.emoji} {r.name}</p>
               <p className="text-[11px] text-gray-400">{describeRoutineSchedule(r)} · {routineSlotLabel(r.time_slot)}{r.time_of_day ? ' ' + String(r.time_of_day).slice(0, 5) : ''}</p>
-              <div className="flex items-center gap-2 mt-1.5">
-                <div className="flex gap-1">{st.last7.map(x => <span key={x.date} className={`w-2.5 h-2.5 rounded-full ${ROUTINE_DOT[x.state]}`}></span>)}</div>
-                <span className="text-[11px] font-bold text-orange-500">{st.current > 0 ? `🔥 ${st.current}일` : ''}</span>
-                <span className="text-[11px] text-gray-500">{st.score === null ? '' : `30일 ${st.score}%`}</span>
+              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 mt-1.5" data-routine-week>
+                <span className="text-[10px] text-gray-400">이번 주</span>
+                {st.week.map((x, i) => (
+                  <span key={x.date} className="flex flex-col items-center gap-0.5">
+                    <span className={`w-2.5 h-2.5 rounded-full ${ROUTINE_DOT[x.state]}`}></span>
+                    <span className="text-[9px] leading-none text-gray-400">{ROUTINE_WEEK_LABELS[i]}</span>
+                  </span>
+                ))}
+                <span className="text-[11px] font-bold text-gray-600 ml-1">
+                  {st.weekDue ? `${st.weekDone}/${st.weekDue}` : st.nextDue ? `이번 주 없음 · 다음 ${Number(st.nextDue.slice(5, 7))}/${Number(st.nextDue.slice(8))}` : '이번 주 없음'}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 mt-1">
+                {st.current > 0 && <span className="text-[11px] font-bold text-orange-500">🔥 {st.current}일 연속</span>}
+                <span className="text-[11px] text-gray-500">{st.score === null ? '' : `최근 30일 ${st.score}%`}</span>
               </div>
             </button>
             {reorder && !r.archived_at && (
@@ -1209,11 +1224,6 @@
         <div className="space-y-4 animate-fade-in" data-routine-tab>
           <TodayRoutineCard routines={routines} date={viewDate} isToday={viewDate === today} getCheck={getCheck} isExerciseDay={isExerciseDay} actions={actions}
             onShiftDay={(n) => { const d = parseDate(viewDate); d.setDate(d.getDate() + n); setViewDate(formatDate(d)); }} />
-          <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100">
-            <p className="text-xs text-gray-500">이번 주 루틴 달성</p>
-            <p className="text-2xl font-black text-emerald-600 mt-1">{weekDue ? Math.round(weekDone / weekDue * 100) : 0}% <span className="text-sm font-bold text-gray-400">{weekDone}/{weekDue}</span></p>
-            <p className="text-[11px] text-gray-400 mt-1">월요일부터 오늘까지, 건너뛴 날과 아직 안 한 오늘 루틴은 빼고 셉니다.</p>
-          </div>
           <div className="flex items-center justify-between">
             <h3 className="font-bold text-gray-800">내 루틴 {active.length}개</h3>
             <div className="flex gap-2">
