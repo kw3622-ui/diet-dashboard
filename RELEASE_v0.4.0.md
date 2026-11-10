@@ -98,4 +98,5 @@ v0.3.14를 바탕으로 합니다. 서버(Edge Function) 변경과 AI 사용은 
 ## 배포 범위
 
 - 시험 페이지: `index_v0.4.0.html`
-- 운영 `index.html`은 시험 확인 후 교체합니다.
+- 2026-11-10 시험 확인 후 운영 `index.html`을 v0.4.0으로 교체했습니다.
+- 되돌리기: `index_rollback_pre_v0.4.0.html`(v0.3.14 운영 화면)을 `index.html`로 복사. DB 표는 그대로 두어도 옛 화면이 동작합니다.

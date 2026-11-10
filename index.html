@@ -19,9 +19,10 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
+  <link rel="stylesheet" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
   <style>
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-family: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       background-color: #f3f4f6;
       -webkit-tap-highlight-color: transparent;
       word-break: keep-all;
@@ -574,7 +575,7 @@
         sessionStorage.removeItem(VIEW_STATE_KEY);
         if (!saved || !(Date.now() - saved.savedAt < VIEW_STATE_MAX_AGE_MS)) return null;
         return {
-          activeTab: ['home', 'status', 'analysis'].includes(saved.activeTab) ? saved.activeTab : null,
+          activeTab: ['home', 'routine', 'status', 'analysis'].includes(saved.activeTab) ? saved.activeTab : null,
           currentDate: /^\d{4}-\d{2}-\d{2}$/.test(saved.currentDate || '') ? saved.currentDate : null,
           statsMode: ['week', 'month'].includes(saved.statsMode) ? saved.statsMode : null,
           longTermDrafts: saved.longTermDrafts && typeof saved.longTermDrafts === 'object' ? saved.longTermDrafts : {},
@@ -638,6 +639,615 @@
       return <p ref={lineRef} title={fullText} aria-label={fullText} className="text-xs text-gray-500 whitespace-nowrap overflow-hidden text-ellipsis">{makeText(visibleCount)}</p>;
     }
 
+    // ★ v0.4.0 루틴(생활 습관). DB: routines, routine_checks (본인 것만). AI는 쓰지 않는다.
+    const ROUTINE_SLOTS = [
+      { key: 'morning', label: '아침', start: 5 },
+      { key: 'late_morning', label: '오전', start: 9 },
+      { key: 'lunch', label: '점심', start: 11 },
+      { key: 'afternoon', label: '오후', start: 14 },
+      { key: 'evening', label: '저녁', start: 18 },
+      { key: 'bedtime', label: '자기 전', start: 21 },
+      { key: 'anytime', label: '언제든', start: null },
+    ];
+    const ROUTINE_WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
+    const ROUTINE_LOOKBACK_DAYS = 365;
+    const routineSlotLabel = (key) => (ROUTINE_SLOTS.find(s => s.key === key) || ROUTINE_SLOTS[6]).label;
+    const routineSlotIndex = (key) => Math.max(0, ROUTINE_SLOTS.findIndex(s => s.key === key));
+
+    // 지금 시각이 속한 시간대(새벽 0~5시는 '자기 전'으로 본다).
+    function currentRoutineSlot(now = new Date()) {
+      const hour = now.getHours();
+      if (hour < 5) return 'bedtime';
+      let current = 'morning';
+      ROUTINE_SLOTS.forEach(slot => { if (slot.start !== null && hour >= slot.start) current = slot.key; });
+      return current;
+    }
+
+    function routineDaysBetween(fromDate, toDate) {
+      return Math.round((parseDate(toDate) - parseDate(fromDate)) / 86400000);
+    }
+
+    function routineArchivedDate(routine) {
+      return routine?.archived_at ? formatDate(new Date(routine.archived_at)) : null;
+    }
+
+    // 그 날짜에 해야 하는 루틴인가. 매월의 없는 날짜(예: 2월 31일)는 그 달 말일로 처리한다.
+    function isRoutineDue(routine, date) {
+      if (!routine || !date) return false;
+      if (routine.start_date && date < routine.start_date) return false;
+      const archived = routineArchivedDate(routine);
+      if (archived && date > archived) return false;
+      const d = parseDate(date);
+      switch (routine.schedule_type) {
+        case 'daily': return true;
+        case 'weekly': return (routine.weekdays || []).map(Number).includes(d.getDay());
+        case 'monthly': {
+          const day = d.getDate();
+          const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+          const days = (routine.month_days || []).map(Number);
+          return days.includes(day) || (day === lastDay && days.some(x => x > lastDay));
+        }
+        case 'interval': {
+          const n = Math.max(1, Number(routine.interval_days) || 1);
+          const diff = routineDaysBetween(routine.start_date || date, date);
+          return diff >= 0 && diff % n === 0;
+        }
+        default: return false;
+      }
+    }
+
+    // done(완료) / skipped(건너뜀) / progress(횟수형 진행 중) / todo(아직). 운동 연결 루틴은 운동 기록이 있으면 완료.
+    function routineDayState(routine, check, exerciseDone) {
+      if (check?.status === 'skipped') return 'skipped';
+      if (check?.status === 'done') return 'done';
+      if (routine.kind === 'count' && (check?.value || 0) >= routine.target) return 'done';
+      if (routine.link_exercise && exerciseDone) return 'done';
+      if (routine.kind === 'count' && (check?.value || 0) > 0) return 'progress';
+      return 'todo';
+    }
+
+    function describeRoutineSchedule(routine) {
+      switch (routine.schedule_type) {
+        case 'daily': return '매일';
+        case 'weekly': return '매주 ' + [...(routine.weekdays || [])].map(Number).sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7)).map(d => ROUTINE_WEEKDAYS[d]).join('·');
+        case 'monthly': return '매월 ' + [...(routine.month_days || [])].map(Number).sort((a, b) => a - b).join('·') + '일';
+        case 'interval': return `${routine.interval_days}일마다`;
+        default: return '';
+      }
+    }
+
+    // 같은 시간대 안에서는 정확한 시간을 적은 것부터 이른 순, 그다음 내가 정한 순서.
+    function compareRoutines(a, b) {
+      return routineSlotIndex(a.time_slot) - routineSlotIndex(b.time_slot)
+        || (a.time_of_day ? 0 : 1) - (b.time_of_day ? 0 : 1)
+        || String(a.time_of_day || '').localeCompare(String(b.time_of_day || ''))
+        || (a.sort_order || 0) - (b.sort_order || 0)
+        || String(a.created_at || '').localeCompare(String(b.created_at || ''));
+    }
+
+    // 연속 일수·최고 연속·최근 30일 달성률·최근 7일. 건너뛴 날은 연속을 끊지 않고 계산에서 뺀다.
+    // 오늘 아직 안 한 루틴은 연속을 끊지 않는다(어제까지로 센다).
+    function computeRoutineStats(routine, getCheck, isExerciseDay, today, lookbackDays = ROUTINE_LOOKBACK_DAYS) {
+      const first = parseDate(today);
+      first.setDate(first.getDate() - lookbackDays);
+      const startDate = routine.start_date && routine.start_date > formatDate(first) ? routine.start_date : formatDate(first);
+      const days = [];
+      for (let d = parseDate(startDate); formatDate(d) <= today; d.setDate(d.getDate() + 1)) {
+        const date = formatDate(d);
+        if (!isRoutineDue(routine, date)) continue;
+        days.push({ date, state: routineDayState(routine, getCheck(routine.id, date), isExerciseDay(date)) });
+      }
+      let current = 0;
+      for (let i = days.length - 1; i >= 0; i--) {
+        const { date, state } = days[i];
+        if (state === 'done') current++;
+        else if (state === 'skipped') continue;
+        else if (date === today) continue;
+        else break;
+      }
+      let best = 0, run = 0, totalDone = 0;
+      days.forEach(({ date, state }) => {
+        if (state === 'done') { run++; totalDone++; best = Math.max(best, run); }
+        else if (state !== 'skipped' && date !== today) run = 0;
+      });
+      const since30 = parseDate(today); since30.setDate(since30.getDate() - 29);
+      const window = days.filter(d => d.date >= formatDate(since30) && d.state !== 'skipped' && !(d.date === today && d.state !== 'done'));
+      const score = window.length ? Math.round(window.filter(d => d.state === 'done').length / window.length * 100) : null;
+      const last7 = [];
+      for (let i = 6; i >= 0; i--) {
+        const d = parseDate(today); d.setDate(d.getDate() - i);
+        const date = formatDate(d);
+        const found = days.find(x => x.date === date);
+        last7.push({ date, state: found ? (found.state === 'todo' || found.state === 'progress' ? (date === today ? 'today' : 'missed') : found.state) : 'none' });
+      }
+      return { current, best, score, totalDone, last7 };
+    }
+
+    // 오늘(보고 있는 날짜)의 루틴: 해야 하는 것만, 시간대 순. 오늘이면 지금 시간대부터 보여 주고 지난 시간대는 뒤로.
+    function buildTodayRoutineGroups(routines, date, isToday, nowSlot) {
+      const due = (routines || []).filter(r => !r.archived_at && isRoutineDue(r, date)).sort(compareRoutines);
+      const order = ROUTINE_SLOTS.map(s => s.key);
+      let slotOrder = order;
+      if (isToday) {
+        const nowIndex = routineSlotIndex(nowSlot);
+        const timed = order.filter(k => k !== 'anytime');
+        slotOrder = [...timed.slice(nowIndex), 'anytime', ...timed.slice(0, nowIndex)];
+      }
+      return slotOrder.map(key => ({
+        key, label: routineSlotLabel(key),
+        past: isToday && key !== 'anytime' && routineSlotIndex(key) < routineSlotIndex(nowSlot),
+        now: isToday && key === nowSlot,
+        items: due.filter(r => (r.time_slot || 'anytime') === key),
+      })).filter(g => g.items.length);
+    }
+
+    function RoutineCheckButton({ routine, state, value, onTap }) {
+      const done = state === 'done', skipped = state === 'skipped';
+      return (
+        <button type="button" onClick={onTap} aria-label={`${routine.name} ${done ? '완료 취소' : '체크'}`}
+          className={`shrink-0 w-9 h-9 rounded-full border-2 flex items-center justify-center text-xs font-bold transition active:scale-95 ${done ? 'bg-emerald-500 border-emerald-500 text-white' : skipped ? 'bg-gray-100 border-gray-200 text-gray-400' : 'bg-white border-emerald-300 text-emerald-600'}`}>
+          {done ? '✓' : skipped ? '쉼' : routine.kind === 'count' ? `+${routine.step || 1}` : ''}
+        </button>
+      );
+    }
+
+    // 루틴 한 줄: 체크 버튼 + 이름 + 진행 + ⋯ 메뉴(건너뜀·직접 입력·메모·취소)
+    function RoutineRow({ routine, check, state, faded, onTap, onSkipToggle, onSetValue, onSaveNote, onClear }) {
+      const [menuOpen, setMenuOpen] = useState(false);
+      const [noteDraft, setNoteDraft] = useState(check?.note || '');
+      const [valueDraft, setValueDraft] = useState(String(check?.value || 0));
+      useEffect(() => { setNoteDraft(check?.note || ''); setValueDraft(String(check?.value || 0)); }, [check?.note, check?.value]);
+      const value = check?.value || 0;
+      return (
+        <div className={`rounded-2xl ${faded && state !== 'done' ? 'opacity-60' : ''}`} data-routine-row>
+          <div className="flex items-center gap-3 py-1.5">
+            <RoutineCheckButton routine={routine} state={state} value={value} onTap={onTap} />
+            <div className="min-w-0 flex-1">
+              <p className={`text-sm font-bold break-keep ${state === 'done' ? 'text-gray-400 line-through' : 'text-gray-800'}`}>
+                <span className="mr-1">{routine.emoji}</span>{routine.name}
+                {routine.time_of_day && <span className="ml-1.5 text-[11px] font-normal text-gray-400">{String(routine.time_of_day).slice(0, 5)}</span>}
+              </p>
+              {routine.kind === 'count' && (
+                <div className="flex items-center gap-2 mt-1">
+                  <div className="h-1.5 flex-1 bg-gray-100 rounded-full overflow-hidden">
+                    <div className="h-full bg-emerald-400" style={{ width: `${Math.min(100, value / routine.target * 100)}%` }}></div>
+                  </div>
+                  <span className="text-[11px] text-gray-500 whitespace-nowrap">{value}/{routine.target}{routine.unit}</span>
+                </div>
+              )}
+              {routine.motto && state !== 'done' && <p className="text-[11px] text-gray-400 mt-0.5 break-keep">“{routine.motto}”</p>}
+              {check?.note && <p className="text-[11px] text-indigo-500 mt-0.5 break-keep">📝 {check.note}</p>}
+              {routine.link_exercise && state === 'done' && !check && <p className="text-[11px] text-emerald-600 mt-0.5">운동 기록으로 자동 완료</p>}
+            </div>
+            <button type="button" onClick={() => setMenuOpen(!menuOpen)} aria-label={`${routine.name} 더보기`} className="shrink-0 w-8 h-8 rounded-lg text-gray-400 hover:bg-gray-50 font-bold">⋯</button>
+          </div>
+          {menuOpen && (
+            <div className="ml-12 mb-2 bg-gray-50 rounded-xl p-2.5 space-y-2" data-routine-menu>
+              <div className="flex flex-wrap gap-1.5">
+                <button type="button" onClick={() => { onSkipToggle(); setMenuOpen(false); }} className="text-[11px] font-bold px-2.5 py-1.5 rounded-lg bg-white border border-gray-200 text-gray-600">
+                  {state === 'skipped' ? '건너뜀 취소' : '오늘은 건너뛰기(쉬는 날)'}
+                </button>
+                {(check || state === 'done') && (
+                  <button type="button" onClick={() => { onClear(); setMenuOpen(false); }} className="text-[11px] font-bold px-2.5 py-1.5 rounded-lg bg-white border border-gray-200 text-gray-600">체크 지우기</button>
+                )}
+              </div>
+              {routine.kind === 'count' && (
+                <div className="flex items-center gap-1.5">
+                  <input type="number" min="0" inputMode="numeric" value={valueDraft} onChange={e => setValueDraft(e.target.value)}
+                    className="w-20 text-sm bg-white border border-gray-200 rounded-lg px-2 py-1" aria-label="횟수 직접 입력" />
+                  <span className="text-xs text-gray-500">{routine.unit}</span>
+                  <button type="button" onClick={() => { onSetValue(Math.max(0, Math.floor(Number(valueDraft) || 0))); setMenuOpen(false); }} className="text-[11px] font-bold px-2.5 py-1.5 rounded-lg bg-emerald-500 text-white">횟수 저장</button>
+                </div>
+              )}
+              <div className="flex items-center gap-1.5">
+                <input type="text" maxLength={300} value={noteDraft} onChange={e => setNoteDraft(e.target.value)} placeholder="메모 (선택)"
+                  className="flex-1 min-w-0 text-sm bg-white border border-gray-200 rounded-lg px-2 py-1" aria-label="루틴 메모" />
+                <button type="button" onClick={() => { onSaveNote(noteDraft.trim()); setMenuOpen(false); }} className="text-[11px] font-bold px-2.5 py-1.5 rounded-lg bg-indigo-500 text-white">메모 저장</button>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // 홈: 오늘의 루틴 카드
+    function TodayRoutineCard({ routines, date, isToday, getCheck, isExerciseDay, actions, onOpenRoutineTab, onShiftDay }) {
+      const [showDone, setShowDone] = useState(false);
+      const active = (routines || []).filter(r => !r.archived_at);
+      const nowSlot = currentRoutineSlot();
+      const groups = buildTodayRoutineGroups(routines, date, isToday, nowSlot);
+      const all = groups.flatMap(g => g.items);
+      const stateOf = (r) => routineDayState(r, getCheck(r.id, date), isExerciseDay(date));
+      const doneCount = all.filter(r => stateOf(r) === 'done').length;
+      const skippedCount = all.filter(r => stateOf(r) === 'skipped').length;
+      const finished = all.filter(r => ['done', 'skipped'].includes(stateOf(r)));
+      return (
+        <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100" data-today-routines>
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <h2 className="font-bold text-gray-800">🌱 {isToday ? '오늘의' : '이 날의'} 루틴 {all.length > 0 && <span className="text-emerald-600">{doneCount}/{all.length - skippedCount}</span>}</h2>
+            {onShiftDay ? (
+              <div className="flex items-center gap-1 shrink-0" data-routine-day-nav>
+                <button type="button" onClick={() => onShiftDay(-1)} aria-label="전날" className="w-7 h-7 rounded-lg bg-gray-100 text-gray-500 text-xs">◀</button>
+                <span className="text-xs font-bold text-gray-600 whitespace-nowrap">{Number(date.slice(5, 7))}/{Number(date.slice(8))}({ROUTINE_WEEKDAYS[parseDate(date).getDay()]})</span>
+                <button type="button" onClick={() => onShiftDay(1)} aria-label="다음날" className="w-7 h-7 rounded-lg bg-gray-100 text-gray-500 text-xs">▶</button>
+              </div>
+            ) : (
+              <button type="button" onClick={onOpenRoutineTab} className="text-xs font-bold text-emerald-600 whitespace-nowrap">루틴 관리 →</button>
+            )}
+          </div>
+          {active.length === 0 ? (
+            <p className="bg-emerald-50 rounded-2xl p-3 text-sm text-emerald-800">아래 <b>+ 루틴 추가</b>로 첫 루틴을 만들어 보세요.</p>
+          ) : all.length === 0 ? (
+            <p className="text-sm text-gray-500 bg-gray-50 rounded-2xl p-3">이 날은 할 루틴이 없어요. 쉬는 날이에요 🌿</p>
+          ) : (
+            <div className="space-y-2">
+              {all.length > 0 && finished.length === all.length && (
+                <p className="text-sm font-bold text-emerald-700 bg-emerald-50 rounded-2xl p-3">🎉 {isToday ? '오늘' : '이 날'} 루틴을 모두 마쳤어요!</p>
+              )}
+              {groups.map(group => {
+                const open = group.items.filter(r => !['done', 'skipped'].includes(stateOf(r)));
+                if (!open.length) return null;
+                return (
+                  <div key={group.key}>
+                    <p className={`text-[11px] font-bold mb-0.5 ${group.now ? 'text-emerald-600' : 'text-gray-400'}`}>
+                      {group.label}{group.now ? ' · 지금' : group.past ? ' · 지난 시간대' : ''}
+                    </p>
+                    {open.map(r => (
+                      <RoutineRow key={r.id} routine={r} check={getCheck(r.id, date)} state={stateOf(r)} faded={group.past}
+                        onTap={() => actions.tap(r, date)} onSkipToggle={() => actions.toggleSkip(r, date)}
+                        onSetValue={(v) => actions.setValue(r, date, v)} onSaveNote={(n) => actions.saveNote(r, date, n)} onClear={() => actions.clear(r, date)} />
+                    ))}
+                  </div>
+                );
+              })}
+              {finished.length > 0 && (
+                <div>
+                  <button type="button" onClick={() => setShowDone(!showDone)} className="text-[11px] font-bold text-gray-400">
+                    {showDone ? '마친 루틴 접기 ▲' : `마친 루틴 ${finished.length}개 보기 ▼`}
+                  </button>
+                  {showDone && finished.map(r => (
+                    <RoutineRow key={r.id} routine={r} check={getCheck(r.id, date)} state={stateOf(r)} faded={false}
+                      onTap={() => actions.tap(r, date)} onSkipToggle={() => actions.toggleSkip(r, date)}
+                      onSetValue={(v) => actions.setValue(r, date, v)} onSaveNote={(n) => actions.saveNote(r, date, n)} onClear={() => actions.clear(r, date)} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ★ 홈: 한두 줄짜리 루틴 요약. 지금 할 것 3개까지 칩으로 바로 체크하고, 나머지는 루틴 탭에서.
+    function HomeRoutineStrip({ routines, date, isToday, getCheck, isExerciseDay, onTap, onOpenRoutineTab }) {
+      const active = (routines || []).filter(r => !r.archived_at);
+      const all = buildTodayRoutineGroups(routines, date, isToday, currentRoutineSlot()).flatMap(g => g.items);
+      const stateOf = (r) => routineDayState(r, getCheck(r.id, date), isExerciseDay(date));
+      const counted = all.filter(r => stateOf(r) !== 'skipped');
+      const done = counted.filter(r => stateOf(r) === 'done').length;
+      const open = all.filter(r => !['done', 'skipped'].includes(stateOf(r)));
+      const shown = open.slice(0, 3);
+      const box = 'bg-white rounded-3xl px-4 py-3 shadow-sm border border-gray-100';
+      if (!active.length) {
+        return (
+          <button type="button" onClick={onOpenRoutineTab} className={`${box} w-full text-left`} data-home-routines>
+            <p className="text-sm text-gray-700"><b className="text-emerald-700">🌱 루틴</b> 꾸준히 하고 싶은 행동을 루틴으로 만들어 보세요 →</p>
+            <p className="text-[11px] text-gray-400 mt-0.5">ⓘ 루틴을 쓰지 않으면 ⚙️ 설정에서 끌 수 있어요.</p>
+          </button>
+        );
+      }
+      if (!all.length || !open.length) {
+        return (
+          <button type="button" onClick={onOpenRoutineTab} className={`${box} w-full text-left text-sm font-bold text-gray-700`} data-home-routines>
+            {!all.length ? '🌱 이 날은 할 루틴이 없어요 🌿' : <>🌱 {isToday ? '오늘' : '이 날'} 루틴 완료 🎉 <span className="text-emerald-600">{done}/{counted.length}</span></>} <span className="text-emerald-600">→</span>
+          </button>
+        );
+      }
+      return (
+        <div className={box} data-home-routines>
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-bold text-gray-800 whitespace-nowrap">🌱 루틴 <span className="text-emerald-600">{done}/{counted.length}</span></span>
+            <div className="h-1.5 flex-1 bg-gray-100 rounded-full overflow-hidden">
+              <div className="h-full bg-emerald-400" style={{ width: `${counted.length ? done / counted.length * 100 : 0}%` }}></div>
+            </div>
+            <button type="button" onClick={onOpenRoutineTab} aria-label="루틴 탭으로" className="text-xs font-bold text-emerald-600 whitespace-nowrap">전체 →</button>
+          </div>
+          <div className="flex flex-wrap gap-1.5 mt-2">
+            {shown.map(r => {
+              const check = getCheck(r.id, date);
+              return (
+                <button key={r.id} type="button" onClick={() => onTap(r, date)} aria-label={`${r.name} 체크`}
+                  className="max-w-full flex items-center gap-1 text-xs font-bold px-2.5 py-1.5 rounded-full border border-emerald-200 bg-emerald-50 text-emerald-800 active:scale-95" data-home-routine-chip>
+                  <span className="w-3.5 h-3.5 rounded-full border-2 border-emerald-400 bg-white shrink-0"></span>
+                  <span className="truncate">{r.emoji} {r.name}</span>
+                  {r.kind === 'count' && <span className="font-normal text-emerald-600 whitespace-nowrap">{check?.value || 0}/{r.target}</span>}
+                </button>
+              );
+            })}
+            {open.length > shown.length && (
+              <button type="button" onClick={onOpenRoutineTab} className="text-xs font-bold px-2.5 py-1.5 rounded-full bg-gray-100 text-gray-500">+{open.length - shown.length}</button>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    const ROUTINE_EMOJIS = ['✅', '🧘', '📚', '💪', '🏃', '💧', '💊', '📝', '🙏', '🎯', '🛏️', '🧹', '🌱', '🎸'];
+
+    function emptyRoutineDraft(today) {
+      return { name: '', emoji: '✅', kind: 'check', target: 1, step: 1, unit: '', schedule_type: 'daily', weekdays: [], month_days: [], interval_days: 2, start_date: today, time_slot: 'anytime', time_of_day: '', motto: '', link_exercise: false };
+    }
+
+    // 루틴 추가·수정 창
+    function RoutineForm({ initial, today, onSave, onCancel }) {
+      const [d, setD] = useState(() => initial ? {
+        ...emptyRoutineDraft(today), ...initial,
+        weekdays: (initial.weekdays || []).map(Number), month_days: (initial.month_days || []).map(Number),
+        interval_days: initial.interval_days || 2, time_of_day: initial.time_of_day ? String(initial.time_of_day).slice(0, 5) : '',
+      } : emptyRoutineDraft(today));
+      const [error, setError] = useState('');
+      const [saving, setSaving] = useState(false);
+      const set = (patch) => setD(prev => ({ ...prev, ...patch }));
+      const toggleIn = (key, value) => setD(prev => ({ ...prev, [key]: prev[key].includes(value) ? prev[key].filter(x => x !== value) : [...prev[key], value] }));
+      const chip = (active) => `text-xs font-bold px-2.5 py-1.5 rounded-lg border ${active ? 'bg-emerald-500 border-emerald-500 text-white' : 'bg-white border-gray-200 text-gray-600'}`;
+      const submit = async () => {
+        const name = d.name.trim();
+        if (!name) return setError('루틴 이름을 적어 주세요.');
+        if (d.schedule_type === 'weekly' && !d.weekdays.length) return setError('요일을 하나 이상 골라 주세요.');
+        if (d.schedule_type === 'monthly' && !d.month_days.length) return setError('날짜를 하나 이상 골라 주세요.');
+        const interval = Math.floor(Number(d.interval_days));
+        if (d.schedule_type === 'interval' && !(interval >= 2 && interval <= 365)) return setError('간격은 2~365일 사이로 적어 주세요.');
+        const target = d.kind === 'count' ? Math.floor(Number(d.target)) : 1;
+        const step = d.kind === 'count' ? Math.floor(Number(d.step)) : 1;
+        if (d.kind === 'count' && !(target >= 1 && step >= 1)) return setError('목표와 한 번에 올릴 양은 1 이상이어야 해요.');
+        if (!d.start_date) return setError('시작일을 골라 주세요.');
+        setError(''); setSaving(true);
+        const ok = await onSave({
+          name: name.slice(0, 60), emoji: (d.emoji || '✅').slice(0, 8), kind: d.kind, target, step, unit: d.kind === 'count' ? d.unit.trim().slice(0, 10) : '',
+          schedule_type: d.schedule_type,
+          weekdays: d.schedule_type === 'weekly' ? [...d.weekdays].sort() : [],
+          month_days: d.schedule_type === 'monthly' ? [...d.month_days].sort((a, b) => a - b) : [],
+          interval_days: d.schedule_type === 'interval' ? interval : null,
+          start_date: d.start_date, time_slot: d.time_slot, time_of_day: d.time_of_day || null,
+          motto: d.motto.trim().slice(0, 100), link_exercise: !!d.link_exercise,
+        });
+        setSaving(false);
+        if (ok === false) setError('저장하지 못했어요. 잠시 후 다시 시도해 주세요.');
+      };
+      return (
+        <div className="fixed inset-0 z-[60] bg-black/40 flex items-end sm:items-center justify-center" data-routine-form>
+          <div className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl p-5 max-h-[90vh] overflow-y-auto space-y-4">
+            <h3 className="font-bold text-lg text-gray-800">{initial ? '루틴 수정' : '새 루틴'}</h3>
+            <div>
+              <label className="text-xs font-bold text-gray-500">이름</label>
+              <div className="flex gap-2 mt-1">
+                <input value={d.emoji} onChange={e => set({ emoji: e.target.value })} maxLength={8} aria-label="이모지" className="w-12 text-center text-lg bg-gray-50 border border-gray-200 rounded-xl" />
+                <input value={d.name} onChange={e => set({ name: e.target.value })} maxLength={60} placeholder="예: 명상 10분" className="flex-1 min-w-0 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-sm" />
+              </div>
+              <div className="flex flex-wrap gap-1 mt-2">
+                {ROUTINE_EMOJIS.map(e => <button key={e} type="button" onClick={() => set({ emoji: e })} className={`w-8 h-8 rounded-lg text-base ${d.emoji === e ? 'bg-emerald-100' : 'bg-gray-50'}`}>{e}</button>)}
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-bold text-gray-500">종류</label>
+              <div className="flex gap-2 mt-1">
+                <button type="button" className={chip(d.kind === 'check')} onClick={() => set({ kind: 'check' })}>했다 / 안 했다</button>
+                <button type="button" className={chip(d.kind === 'count')} onClick={() => set({ kind: 'count', target: d.target > 1 ? d.target : 10 })}>횟수·양</button>
+              </div>
+              {d.kind === 'count' && (
+                <div className="grid grid-cols-3 gap-2 mt-2">
+                  <label className="text-[11px] text-gray-500">목표<input type="number" min="1" inputMode="numeric" value={d.target} onChange={e => set({ target: e.target.value })} className="w-full mt-0.5 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-sm" /></label>
+                  <label className="text-[11px] text-gray-500">단위<input value={d.unit} maxLength={10} onChange={e => set({ unit: e.target.value })} placeholder="개, 쪽, 분" className="w-full mt-0.5 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-sm" /></label>
+                  <label className="text-[11px] text-gray-500">한 번 누를 때<input type="number" min="1" inputMode="numeric" value={d.step} onChange={e => set({ step: e.target.value })} className="w-full mt-0.5 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-sm" /></label>
+                </div>
+              )}
+            </div>
+            <div>
+              <label className="text-xs font-bold text-gray-500">반복</label>
+              <div className="flex flex-wrap gap-2 mt-1">
+                {[['daily', '매일'], ['weekly', '매주'], ['monthly', '매월'], ['interval', 'n일마다']].map(([k, label]) => (
+                  <button key={k} type="button" className={chip(d.schedule_type === k)} onClick={() => set({ schedule_type: k })}>{label}</button>
+                ))}
+              </div>
+              {d.schedule_type === 'weekly' && (
+                <div className="flex gap-1 mt-2">
+                  {[1, 2, 3, 4, 5, 6, 0].map(w => <button key={w} type="button" className={`flex-1 ${chip(d.weekdays.includes(w))}`} onClick={() => toggleIn('weekdays', w)}>{ROUTINE_WEEKDAYS[w]}</button>)}
+                </div>
+              )}
+              {d.schedule_type === 'monthly' && (
+                <div className="grid grid-cols-7 gap-1 mt-2">
+                  {Array.from({ length: 31 }, (_, i) => i + 1).map(n => <button key={n} type="button" className={`text-xs font-bold py-1.5 rounded-lg border ${d.month_days.includes(n) ? 'bg-emerald-500 border-emerald-500 text-white' : 'bg-white border-gray-200 text-gray-600'}`} onClick={() => toggleIn('month_days', n)}>{n}</button>)}
+                  <p className="col-span-7 text-[11px] text-gray-400 mt-1">그 달에 없는 날짜(예: 2월 30일)는 그 달 마지막 날에 해요.</p>
+                </div>
+              )}
+              {d.schedule_type === 'interval' && (
+                <div className="flex items-center gap-2 mt-2 text-sm text-gray-600">
+                  <input type="number" min="2" max="365" inputMode="numeric" value={d.interval_days} onChange={e => set({ interval_days: e.target.value })} className="w-20 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5" aria-label="며칠마다" />
+                  <span>일마다 (시작일 기준)</span>
+                </div>
+              )}
+              <label className="flex items-center gap-2 mt-2 text-xs text-gray-500">시작일
+                <input type="date" value={d.start_date} onChange={e => set({ start_date: e.target.value })} className="bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 text-sm" />
+              </label>
+            </div>
+            <div>
+              <label className="text-xs font-bold text-gray-500">시간대</label>
+              <div className="flex flex-wrap gap-1.5 mt-1">
+                {ROUTINE_SLOTS.map(s => <button key={s.key} type="button" className={chip(d.time_slot === s.key)} onClick={() => set({ time_slot: s.key })}>{s.label}</button>)}
+              </div>
+              <label className="flex items-center gap-2 mt-2 text-xs text-gray-500">정확한 시간(선택)
+                <input type="time" value={d.time_of_day} onChange={e => set({ time_of_day: e.target.value })} className="bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 text-sm" />
+                {d.time_of_day && <button type="button" onClick={() => set({ time_of_day: '' })} className="text-[11px] text-gray-400">지우기</button>}
+              </label>
+            </div>
+            <div>
+              <label className="text-xs font-bold text-gray-500">다짐 한 줄 (선택)</label>
+              <input value={d.motto} maxLength={100} onChange={e => set({ motto: e.target.value })} placeholder="예: 흔들리지 않는 하루를 위해" className="w-full mt-1 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-sm" />
+            </div>
+            <label className="flex items-center gap-2 text-sm text-gray-600">
+              <input type="checkbox" checked={d.link_exercise} onChange={e => set({ link_exercise: e.target.checked })} />
+              그날 운동을 기록하면 자동으로 완료
+            </label>
+            {error && <p className="text-sm text-red-500">{error}</p>}
+            <div className="flex gap-2">
+              <button type="button" onClick={onCancel} className="flex-1 py-3 rounded-xl bg-gray-100 text-gray-600 font-bold">취소</button>
+              <button type="button" onClick={submit} disabled={saving} className="flex-1 py-3 rounded-xl bg-emerald-600 text-white font-bold disabled:opacity-60">{saving ? '저장 중...' : '저장'}</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const ROUTINE_DOT = { done: 'bg-emerald-500', skipped: 'bg-gray-300', missed: 'bg-red-200', today: 'bg-white border border-emerald-300', none: 'bg-gray-100' };
+
+    // 루틴 상세: 한 달 달력 + 기록
+    function RoutineDetail({ routine, today, getCheck, isExerciseDay, stats, onEdit, onArchiveToggle, onDelete, onClose }) {
+      const [month, setMonth] = useState(today.slice(0, 7));
+      const [confirmDelete, setConfirmDelete] = useState(false);
+      const first = parseDate(month + '-01');
+      const lastDay = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+      const lead = (first.getDay() + 6) % 7;
+      const cells = [...Array(lead).fill(null), ...Array.from({ length: lastDay }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`)];
+      const shiftMonth = (n) => { const d = parseDate(month + '-01'); d.setMonth(d.getMonth() + n); setMonth(formatDate(d).slice(0, 7)); };
+      const cellClass = (date) => {
+        if (!isRoutineDue(routine, date)) return 'text-gray-300';
+        const s = routineDayState(routine, getCheck(routine.id, date), isExerciseDay(date));
+        if (s === 'done') return 'bg-emerald-500 text-white font-bold';
+        if (s === 'skipped') return 'bg-gray-200 text-gray-500';
+        if (date > today) return 'border border-emerald-200 text-gray-500';
+        if (date === today) return 'border-2 border-emerald-400 text-emerald-700 font-bold';
+        return 'bg-red-50 text-red-400';
+      };
+      return (
+        <div className="fixed inset-0 z-[60] bg-black/40 flex items-end sm:items-center justify-center" data-routine-detail>
+          <div className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl p-5 max-h-[90vh] overflow-y-auto space-y-4">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <h3 className="font-bold text-lg text-gray-800 break-keep">{routine.emoji} {routine.name}</h3>
+                <p className="text-xs text-gray-500 mt-0.5">{describeRoutineSchedule(routine)} · {routineSlotLabel(routine.time_slot)}{routine.time_of_day ? ' ' + String(routine.time_of_day).slice(0, 5) : ''}{routine.kind === 'count' ? ` · 목표 ${routine.target}${routine.unit}` : ''}</p>
+                {routine.motto && <p className="text-xs text-gray-400 mt-1">“{routine.motto}”</p>}
+              </div>
+              <button type="button" onClick={onClose} className="text-gray-400 text-xl font-bold px-2">✕</button>
+            </div>
+            <div className="grid grid-cols-4 gap-2 text-center">
+              {[['🔥 연속', `${stats.current}일`], ['최고 연속', `${stats.best}일`], ['30일 달성', stats.score === null ? '-' : `${stats.score}%`], ['1년 완료', `${stats.totalDone}회`]].map(([k, v]) => (
+                <div key={k} className="bg-gray-50 rounded-xl py-2"><p className="text-[10px] text-gray-500">{k}</p><p className="text-sm font-bold text-gray-800">{v}</p></div>
+              ))}
+            </div>
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <button type="button" onClick={() => shiftMonth(-1)} className="px-3 py-1 text-gray-500 font-bold">◀</button>
+                <p className="text-sm font-bold text-gray-700">{first.getFullYear()}년 {first.getMonth() + 1}월</p>
+                <button type="button" onClick={() => shiftMonth(1)} className="px-3 py-1 text-gray-500 font-bold">▶</button>
+              </div>
+              <div className="grid grid-cols-7 gap-1 text-center text-[11px]" data-routine-calendar>
+                {['월', '화', '수', '목', '금', '토', '일'].map(w => <p key={w} className="text-gray-400 font-bold">{w}</p>)}
+                {cells.map((date, i) => date
+                  ? <p key={date} className={`aspect-square flex items-center justify-center rounded-lg ${cellClass(date)}`}>{Number(date.slice(8))}</p>
+                  : <p key={'b' + i}></p>)}
+              </div>
+              <p className="text-[10px] text-gray-400 mt-2">초록=완료 · 회색=건너뜀 · 분홍=못 한 날 · 흐린 숫자=할 날이 아님</p>
+            </div>
+            <div className="flex gap-2">
+              <button type="button" onClick={onEdit} className="flex-1 py-2.5 rounded-xl bg-emerald-50 text-emerald-700 font-bold text-sm">수정</button>
+              <button type="button" onClick={onArchiveToggle} className="flex-1 py-2.5 rounded-xl bg-gray-100 text-gray-600 font-bold text-sm">{routine.archived_at ? '다시 쓰기' : '보관(숨기기)'}</button>
+              {confirmDelete
+                ? <button type="button" onClick={onDelete} className="flex-1 py-2.5 rounded-xl bg-red-500 text-white font-bold text-sm">정말 삭제</button>
+                : <button type="button" onClick={() => setConfirmDelete(true)} className="flex-1 py-2.5 rounded-xl bg-red-50 text-red-500 font-bold text-sm">삭제</button>}
+            </div>
+            {confirmDelete && <p className="text-[11px] text-red-500">삭제하면 이 루틴의 체크 기록도 모두 지워져요. 기록을 남기려면 보관을 써 주세요.</p>}
+          </div>
+        </div>
+      );
+    }
+
+    // 루틴 탭
+    function RoutineTab({ routines, today, getCheck, isExerciseDay, actions, onSave, onArchiveToggle, onDelete, onMove, loading }) {
+      const [formFor, setFormFor] = useState(null); // null | 'new' | routine
+      const [viewDate, setViewDate] = useState(today);
+      const [detailId, setDetailId] = useState(null);
+      const [showArchived, setShowArchived] = useState(false);
+      const [reorder, setReorder] = useState(false);
+      const active = (routines || []).filter(r => !r.archived_at).sort(compareRoutines);
+      const archived = (routines || []).filter(r => r.archived_at);
+      const statsOf = (r) => computeRoutineStats(r, getCheck, isExerciseDay, today);
+      const week = getWeekRange(today);
+      let weekDue = 0, weekDone = 0;
+      active.forEach(r => {
+        for (let d = parseDate(week.start); formatDate(d) <= today && formatDate(d) <= week.end; d.setDate(d.getDate() + 1)) {
+          const date = formatDate(d);
+          if (!isRoutineDue(r, date)) continue;
+          const s = routineDayState(r, getCheck(r.id, date), isExerciseDay(date));
+          if (s === 'skipped' || (date === today && s !== 'done')) continue;
+          weekDue++; if (s === 'done') weekDone++;
+        }
+      });
+      const detail = (routines || []).find(r => r.id === detailId);
+      const row = (r) => {
+        const st = statsOf(r);
+        return (
+          <div key={r.id} className="bg-white rounded-2xl p-3 border border-gray-100 flex items-center gap-3" data-routine-list-item>
+            <button type="button" onClick={() => setDetailId(r.id)} className="flex-1 min-w-0 text-left">
+              <p className="text-sm font-bold text-gray-800 break-keep">{r.emoji} {r.name}</p>
+              <p className="text-[11px] text-gray-400">{describeRoutineSchedule(r)} · {routineSlotLabel(r.time_slot)}{r.time_of_day ? ' ' + String(r.time_of_day).slice(0, 5) : ''}</p>
+              <div className="flex items-center gap-2 mt-1.5">
+                <div className="flex gap-1">{st.last7.map(x => <span key={x.date} className={`w-2.5 h-2.5 rounded-full ${ROUTINE_DOT[x.state]}`}></span>)}</div>
+                <span className="text-[11px] font-bold text-orange-500">{st.current > 0 ? `🔥 ${st.current}일` : ''}</span>
+                <span className="text-[11px] text-gray-500">{st.score === null ? '' : `30일 ${st.score}%`}</span>
+              </div>
+            </button>
+            {reorder && !r.archived_at && (
+              <div className="flex flex-col gap-1 shrink-0">
+                <button type="button" onClick={() => onMove(r, -1)} className="w-8 h-7 rounded-lg bg-gray-100 text-gray-500 text-xs">▲</button>
+                <button type="button" onClick={() => onMove(r, 1)} className="w-8 h-7 rounded-lg bg-gray-100 text-gray-500 text-xs">▼</button>
+              </div>
+            )}
+          </div>
+        );
+      };
+      return (
+        <div className="space-y-4 animate-fade-in" data-routine-tab>
+          <TodayRoutineCard routines={routines} date={viewDate} isToday={viewDate === today} getCheck={getCheck} isExerciseDay={isExerciseDay} actions={actions}
+            onShiftDay={(n) => { const d = parseDate(viewDate); d.setDate(d.getDate() + n); setViewDate(formatDate(d)); }} />
+          <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100">
+            <p className="text-xs text-gray-500">이번 주 루틴 달성</p>
+            <p className="text-2xl font-black text-emerald-600 mt-1">{weekDue ? Math.round(weekDone / weekDue * 100) : 0}% <span className="text-sm font-bold text-gray-400">{weekDone}/{weekDue}</span></p>
+            <p className="text-[11px] text-gray-400 mt-1">월요일부터 오늘까지, 건너뛴 날과 아직 안 한 오늘 루틴은 빼고 셉니다.</p>
+          </div>
+          <div className="flex items-center justify-between">
+            <h3 className="font-bold text-gray-800">내 루틴 {active.length}개</h3>
+            <div className="flex gap-2">
+              {active.length > 1 && <button type="button" onClick={() => setReorder(!reorder)} className="text-xs font-bold px-3 py-2 rounded-xl bg-gray-100 text-gray-600">{reorder ? '순서 완료' : '순서 바꾸기'}</button>}
+              <button type="button" onClick={() => setFormFor('new')} className="text-xs font-bold px-3 py-2 rounded-xl bg-emerald-600 text-white">+ 루틴 추가</button>
+            </div>
+          </div>
+          {loading ? <p className="text-sm text-gray-400">불러오는 중...</p> : active.length === 0 ? (
+            <div className="bg-emerald-50 rounded-2xl p-4 text-sm text-emerald-800 leading-relaxed">
+              아직 루틴이 없어요. 명상, 공부, 운동, 마음다짐처럼 꾸준히 하고 싶은 행동을 추가해 보세요.
+            </div>
+          ) : <div className="space-y-2">{active.map(row)}</div>}
+          {reorder && <p className="text-[11px] text-gray-400">같은 시간대 안에서, 정확한 시간을 적지 않은 루틴끼리의 순서가 바뀝니다.</p>}
+          {archived.length > 0 && (
+            <div>
+              <button type="button" onClick={() => setShowArchived(!showArchived)} className="text-xs font-bold text-gray-400">{showArchived ? '보관한 루틴 접기 ▲' : `보관한 루틴 ${archived.length}개 ▼`}</button>
+              {showArchived && <div className="space-y-2 mt-2 opacity-70">{archived.map(row)}</div>}
+            </div>
+          )}
+          {formFor && (
+            <RoutineForm initial={formFor === 'new' ? null : formFor} today={today}
+              onCancel={() => setFormFor(null)}
+              onSave={async (data) => { const ok = await onSave(formFor === 'new' ? null : formFor, data); if (ok !== false) setFormFor(null); return ok; }} />
+          )}
+          {detail && !formFor && (
+            <RoutineDetail routine={detail} today={today} getCheck={getCheck} isExerciseDay={isExerciseDay} stats={statsOf(detail)}
+              onClose={() => setDetailId(null)} onEdit={() => setFormFor(detail)}
+              onArchiveToggle={async () => { await onArchiveToggle(detail); setDetailId(null); }}
+              onDelete={async () => { await onDelete(detail); setDetailId(null); }} />
+          )}
+        </div>
+      );
+    }
+
     function App() {
       const [session, setSession] = useState(undefined); // undefined = 확인 중, null = 비로그인, 객체 = 로그인됨
       const [profile, setProfile] = useState(null);
@@ -695,7 +1305,7 @@
       };
       const handleContentTouchEnd = (e) => {
         if (!touchStartRef.current) return;
-        if (activeTab === 'analysis' && analysisView === 'longterm') { touchStartRef.current = null; return; }
+        if ((activeTab === 'analysis' && analysisView === 'longterm') || activeTab === 'routine') { touchStartRef.current = null; return; }
         const t = e.changedTouches[0];
         const dx = t.clientX - touchStartRef.current.x;
         const dy = t.clientY - touchStartRef.current.y;
@@ -719,6 +1329,21 @@
         try { localStorage.setItem('analysisView', analysisView); } catch { /* 저장 안 돼도 동작에는 문제 없음 */ }
       }, [analysisView]);
       const isLongTermView = activeTab === 'analysis' && analysisView === 'longterm';
+      // 장기 분석과 루틴 탭에는 날짜·주간/월간 선택이 없다.
+      const hidesDateNav = isLongTermView || activeTab === 'routine';
+      // ★ 루틴 기능 사용(계정 설정, 기본 켜짐). 끄면 홈 루틴 칸과 루틴 탭이 사라진다.
+      const showRoutines = profile?.showRoutines !== false;
+      const [showRoutineHelp, setShowRoutineHelp] = useState(false);
+      const PAGE_TITLES = {
+        home: { icon: '📋', label: '하루 기록', circle: 'bg-blue-100' },
+        routine: { icon: '🌱', label: '루틴', circle: 'bg-emerald-100' },
+        status: { icon: '📊', label: '건강 현황', circle: 'bg-sky-100' },
+        analysis: { icon: '🧭', label: '건강분석', circle: 'bg-indigo-100' },
+      };
+      const pageTitle = PAGE_TITLES[activeTab] || PAGE_TITLES.home;
+      useEffect(() => {
+        if (profile && !showRoutines && activeTab === 'routine') setActiveTab('home');
+      }, [profile, showRoutines, activeTab]);
       const [openTagGroup, setOpenTagGroup] = useState(null);
       const [showAllTagGroups, setShowAllTagGroups] = useState(false);
       const [aiReport, setAiReport] = useState("");
@@ -828,7 +1453,8 @@
               isApproved: !!data.is_approved, isAdmin: !!data.is_admin,
               goalExerciseWeekly: data.goal_exercise_weekly, goalAlcoholFreeWeekly: data.goal_alcohol_free_weekly,
               goalWeightKg: data.goal_weight_kg, goalBpSysMax: data.goal_bp_sys_max, goalBpDiaMax: data.goal_bp_dia_max,
-              goalSugarMax: data.goal_sugar_max
+              goalSugarMax: data.goal_sugar_max,
+              showRoutines: data.show_routines !== false
             });
           }
         });
@@ -901,7 +1527,7 @@
         if (!session) return;
         if (activeTab === 'home') {
           fetchLogs(currentDate);
-        } else {
+        } else if (activeTab !== 'routine') {
           const range = statsMode === 'week' ? getWeekRange(currentDate) : getMonthRange(currentDate);
           setActiveRange(range);
           fetchPeriodLogs(range.start, range.end);
@@ -1198,6 +1824,156 @@
       };
 
       // ★ 짧게 떴다 사라지는 성공 안내 배너
+      // ★ v0.4.0 루틴. 체크는 "루틴id|날짜" 키로 보관한다.
+      const [routines, setRoutines] = useState([]);
+      const [routineChecks, setRoutineChecks] = useState({});
+      const [routineExerciseDates, setRoutineExerciseDates] = useState(() => new Set());
+      const [routinesLoading, setRoutinesLoading] = useState(false);
+      const routineKey = (routineId, date) => `${routineId}|${date}`;
+      const getRoutineCheck = (routineId, date) => routineChecks[routineKey(routineId, date)] || null;
+      const isRoutineExerciseDay = (date) => routineExerciseDates.has(date) || (date === currentDate && logs.some(l => l.category === '운동'));
+
+      const fetchRoutineData = async () => {
+        if (!session) return;
+        setRoutinesLoading(true);
+        const since = parseDate(formatDate(new Date()));
+        since.setDate(since.getDate() - ROUTINE_LOOKBACK_DAYS);
+        const sinceStr = formatDate(since);
+        const pageAll = async (build) => {
+          const rows = [];
+          for (let from = 0; from < 20000; from += 1000) {
+            const { data, error } = await withAuthRetry(() => build(from, from + 999));
+            if (error) throw error;
+            rows.push(...(data || []));
+            if (!data || data.length < 1000) break;
+          }
+          return rows;
+        };
+        try {
+          const [routineRows, checkRows, exerciseRows] = await Promise.all([
+            pageAll((a, b) => sb.from('routines').select('*').order('sort_order', { ascending: true }).order('created_at', { ascending: true }).range(a, b)),
+            pageAll((a, b) => sb.from('routine_checks').select('*').gte('check_date', sinceStr).order('check_date', { ascending: true }).range(a, b)),
+            pageAll((a, b) => sb.from('logs').select('log_date').eq('category', '운동').gte('log_date', sinceStr).order('log_date', { ascending: true }).range(a, b)),
+          ]);
+          setRoutines(routineRows);
+          setRoutineChecks(Object.fromEntries(checkRows.map(c => [routineKey(c.routine_id, c.check_date), c])));
+          setRoutineExerciseDates(new Set(exerciseRows.map(r => r.log_date)));
+        } catch (err) {
+          console.error(err); // 루틴만 비워 두고 다른 화면은 그대로 쓴다
+        } finally {
+          setRoutinesLoading(false);
+        }
+      };
+
+      useEffect(() => { if (session) fetchRoutineData(); }, [session]);
+
+      const ROUTINE_SAVE_FAILED = '루틴을 저장하지 못했어요. 잠시 후 다시 시도해 주세요.';
+
+      // 체크 저장(화면 먼저 바꾸고, 실패하면 되돌린다)
+      const putRoutineCheck = async (routine, date, fields) => {
+        const key = routineKey(routine.id, date);
+        const prev = routineChecks[key] || null;
+        const row = {
+          user_id: session.user.id, routine_id: routine.id, check_date: date,
+          status: prev?.status || 'progress', value: prev?.value || 0, note: prev?.note || '',
+          ...fields, updated_at: new Date().toISOString(),
+        };
+        setRoutineChecks(p => ({ ...p, [key]: row }));
+        const { data, error } = await sb.from('routine_checks').upsert(row, { onConflict: 'routine_id,check_date' }).select().single();
+        if (error) {
+          setRoutineChecks(p => { const n = { ...p }; if (prev) n[key] = prev; else delete n[key]; return n; });
+          showNotice(ROUTINE_SAVE_FAILED);
+          return;
+        }
+        setRoutineChecks(p => ({ ...p, [key]: data }));
+      };
+
+      const deleteRoutineCheck = async (routine, date) => {
+        const key = routineKey(routine.id, date);
+        const prev = routineChecks[key] || null;
+        if (!prev) return;
+        setRoutineChecks(p => { const n = { ...p }; delete n[key]; return n; });
+        const { error } = await sb.from('routine_checks').delete().eq('routine_id', routine.id).eq('check_date', date);
+        if (error) { setRoutineChecks(p => ({ ...p, [key]: prev })); showNotice(ROUTINE_SAVE_FAILED); }
+      };
+
+      // 완료를 되돌릴 때 메모가 있으면 메모는 남긴다.
+      const undoRoutineCheck = (routine, date) => {
+        const check = getRoutineCheck(routine.id, date);
+        if (check?.note) return putRoutineCheck(routine, date, { status: 'progress', value: 0 });
+        return deleteRoutineCheck(routine, date);
+      };
+
+      const routineActions = {
+        tap: (routine, date) => {
+          const check = getRoutineCheck(routine.id, date);
+          const state = routineDayState(routine, check, isRoutineExerciseDay(date));
+          if (state === 'done' && !check) { showNotice('운동 기록으로 자동 완료된 루틴이에요. 쉬는 날이면 ⋯에서 건너뛰기를 고르세요.'); return; }
+          if (state === 'done' || state === 'skipped') return undoRoutineCheck(routine, date);
+          if (routine.kind === 'count') {
+            const value = (check?.value || 0) + (routine.step || 1);
+            return putRoutineCheck(routine, date, { value, status: value >= routine.target ? 'done' : 'progress' });
+          }
+          return putRoutineCheck(routine, date, { status: 'done' });
+        },
+        toggleSkip: (routine, date) => {
+          const check = getRoutineCheck(routine.id, date);
+          if (check?.status === 'skipped') return undoRoutineCheck(routine, date);
+          return putRoutineCheck(routine, date, { status: 'skipped' });
+        },
+        setValue: (routine, date, value) => putRoutineCheck(routine, date, { value, status: value >= routine.target ? 'done' : 'progress' }),
+        saveNote: (routine, date, note) => {
+          const check = getRoutineCheck(routine.id, date);
+          if (!check && !note) return;
+          if (!note && check && check.status === 'progress' && !check.value) return deleteRoutineCheck(routine, date);
+          return putRoutineCheck(routine, date, { note });
+        },
+        clear: (routine, date) => deleteRoutineCheck(routine, date),
+      };
+
+      const saveRoutine = async (existing, data) => {
+        if (existing) {
+          const { data: row, error } = await sb.from('routines').update({ ...data, updated_at: new Date().toISOString() }).eq('id', existing.id).select().single();
+          if (error) { showNotice(ROUTINE_SAVE_FAILED); return false; }
+          setRoutines(p => p.map(r => r.id === row.id ? row : r));
+          return true;
+        }
+        const sortOrder = routines.reduce((m, r) => Math.max(m, r.sort_order || 0), 0) + 10;
+        const { data: row, error } = await sb.from('routines').insert({ ...data, user_id: session.user.id, sort_order: sortOrder }).select().single();
+        if (error) { showNotice(ROUTINE_SAVE_FAILED); return false; }
+        setRoutines(p => [...p, row]);
+        showNotice(`"${row.name}" 루틴을 추가했어요.`);
+        return true;
+      };
+
+      const toggleRoutineArchive = async (routine) => {
+        const archived_at = routine.archived_at ? null : new Date().toISOString();
+        const { data: row, error } = await sb.from('routines').update({ archived_at, updated_at: new Date().toISOString() }).eq('id', routine.id).select().single();
+        if (error) { showNotice(ROUTINE_SAVE_FAILED); return; }
+        setRoutines(p => p.map(r => r.id === row.id ? row : r));
+      };
+
+      const deleteRoutine = async (routine) => {
+        const { error } = await sb.from('routines').delete().eq('id', routine.id);
+        if (error) { showNotice(ROUTINE_SAVE_FAILED); return; }
+        setRoutines(p => p.filter(r => r.id !== routine.id));
+        setRoutineChecks(p => Object.fromEntries(Object.entries(p).filter(([k]) => !k.startsWith(routine.id + '|'))));
+      };
+
+      // 순서는 같은 시간대 안, 정확한 시간이 없는 루틴끼리만 바꾼다.
+      const moveRoutine = async (routine, direction) => {
+        if (routine.time_of_day) { showNotice('정확한 시간이 있는 루틴은 시간 순서대로 보여요.'); return; }
+        const group = routines.filter(r => !r.archived_at && !r.time_of_day && (r.time_slot || 'anytime') === (routine.time_slot || 'anytime')).sort(compareRoutines);
+        const i = group.findIndex(r => r.id === routine.id), j = i + direction;
+        if (i < 0 || j < 0 || j >= group.length) return;
+        [group[i], group[j]] = [group[j], group[i]];
+        const updates = group.map((r, index) => ({ ...r, sort_order: (index + 1) * 10 }));
+        const prev = routines;
+        setRoutines(p => p.map(r => updates.find(u => u.id === r.id) || r));
+        const results = await Promise.all(updates.map(u => sb.from('routines').update({ sort_order: u.sort_order }).eq('id', u.id)));
+        if (results.some(r => r.error)) { setRoutines(prev); showNotice(ROUTINE_SAVE_FAILED); }
+      };
+
       const showNotice = (msg) => {
         setSysNotice(msg);
         setTimeout(() => setSysNotice(""), 2500);
@@ -1270,6 +2046,7 @@
             goal_bp_sys_max: fd.get('goalBpSysMax') ? Number(fd.get('goalBpSysMax')) : null,
             goal_bp_dia_max: fd.get('goalBpDiaMax') ? Number(fd.get('goalBpDiaMax')) : null,
             goal_sugar_max: fd.get('goalSugarMax') ? Number(fd.get('goalSugarMax')) : null,
+            show_routines: fd.get('showRoutines') === 'on',
           }).eq('id', session.user.id);
           if (pErr) throw pErr;
 
@@ -1296,7 +2073,8 @@
               isApproved: !!freshProfile.is_approved, isAdmin: !!freshProfile.is_admin,
               goalExerciseWeekly: freshProfile.goal_exercise_weekly, goalAlcoholFreeWeekly: freshProfile.goal_alcohol_free_weekly,
               goalWeightKg: freshProfile.goal_weight_kg, goalBpSysMax: freshProfile.goal_bp_sys_max, goalBpDiaMax: freshProfile.goal_bp_dia_max,
-              goalSugarMax: freshProfile.goal_sugar_max
+              goalSugarMax: freshProfile.goal_sugar_max,
+              showRoutines: freshProfile.show_routines !== false
             });
           }
           setIsSettingsOpen(false);
@@ -2411,6 +3189,13 @@
                 </select>
                 <p className="text-xs text-gray-400 mt-1">기분에 따라 나를 대하는 AI의 피드백 톤을 조절해보세요.</p>
               </div>
+              <div className="col-span-2 bg-emerald-50 rounded-xl p-3" data-setting-routines>
+                <label className="flex items-center justify-between gap-3">
+                  <span className="text-sm font-bold text-gray-700">🌱 루틴 기능 사용</span>
+                  <input type="checkbox" name="showRoutines" defaultChecked={profile?.showRoutines !== false} className="w-5 h-5 accent-emerald-600" />
+                </label>
+                <p className="text-xs text-gray-500 mt-1">끄면 홈의 루틴 칸과 아래 메뉴의 루틴 탭이 사라져요. 저장된 루틴은 지워지지 않아요.</p>
+              </div>
             </div>
 
             <div className="pt-4 border-t border-gray-100">
@@ -2580,8 +3365,13 @@
 
           <div className="bg-white px-5 py-5 shadow-sm sticky top-0 z-20">
             <div className="flex justify-between items-center gap-3 mb-5">
-              <h1 className="font-bold text-xl text-gray-800 whitespace-nowrap">
-                {activeTab === 'home' ? '🥗 건강 기록' : activeTab === 'status' ? '📊 건강 현황' : '🧭 건강분석'}
+              <h1 className="flex items-center gap-2.5 min-w-0 text-[22px] font-extrabold tracking-tight text-gray-900 whitespace-nowrap" data-page-title>
+                <span className={`w-9 h-9 rounded-full flex items-center justify-center text-lg shrink-0 ${pageTitle.circle}`}>{pageTitle.icon}</span>
+                <span>{pageTitle.label}</span>
+                {activeTab === 'routine' && (
+                  <button type="button" onClick={() => setShowRoutineHelp(!showRoutineHelp)} aria-label="루틴 기능 안내"
+                    className="w-6 h-6 rounded-full bg-gray-100 text-gray-500 text-xs font-bold">?</button>
+                )}
               </h1>
               <div className="flex items-center gap-1.5 shrink-0">
                 {profile.isAdmin && (
@@ -2595,6 +3385,13 @@
               </div>
             </div>
 
+            {activeTab === 'routine' && showRoutineHelp && (
+              <div className="mb-4 bg-emerald-50 rounded-xl p-3 text-xs text-emerald-900 leading-relaxed" data-routine-help>
+                루틴은 식단과 함께 매일 챙기고 싶은 습관(운동·공부·명상 등)을 체크하는 기능이에요.
+                쓰지 않으려면 <b>⚙️ 설정 → 🌱 루틴 기능 사용</b>을 끄세요. 홈과 아래 메뉴에서 사라지고, 저장된 루틴은 지워지지 않아요.
+              </div>
+            )}
+
             {activeTab === 'analysis' && (
               <div className="flex gap-2 mb-4 bg-indigo-50 p-1 rounded-xl" data-analysis-view-tabs>
                 <button type="button" onClick={() => setAnalysisView('period')} className={`flex-1 py-2 text-sm font-bold rounded-lg transition ${analysisView === 'period' ? 'bg-white shadow-sm text-indigo-600' : 'text-gray-500'}`}>기간 분석</button>
@@ -2602,7 +3399,7 @@
               </div>
             )}
 
-            {!isLongTermView && (
+            {!hidesDateNav && (
             <div className="flex justify-between items-center bg-gray-50 p-2 rounded-xl border border-gray-200">
               <button onClick={() => changeDate(-1)} className="p-3 text-gray-500 hover:text-black font-extrabold text-lg">◀</button>
 
@@ -2629,7 +3426,7 @@
             </div>
             )}
 
-            {activeTab !== 'home' && !isLongTermView && (
+            {activeTab !== 'home' && !hidesDateNav && (
               <div className="flex gap-2 mt-4 bg-gray-100 p-1 rounded-xl">
                 <button onClick={() => setStatsMode('week')} className={`flex-1 py-2 text-sm font-bold rounded-lg transition ${statsMode === 'week' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}>주간</button>
                 <button onClick={() => setStatsMode('month')} className={`flex-1 py-2 text-sm font-bold rounded-lg transition ${statsMode === 'month' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}>월간</button>
@@ -2679,6 +3476,12 @@
                     </button>
                   )}
                 </div>
+
+                {showRoutines && (
+                  <HomeRoutineStrip routines={routines} date={currentDate} isToday={currentDate === formatDate(new Date())}
+                    getCheck={getRoutineCheck} isExerciseDay={isRoutineExerciseDay} onTap={routineActions.tap}
+                    onOpenRoutineTab={() => { setActiveTab('routine'); window.scrollTo(0, 0); }} />
+                )}
 
                 <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100" data-today-records>
                   <div className="flex items-start justify-between gap-2 mb-4">
@@ -2892,7 +3695,12 @@
               </>
             )}
 
-            {activeTab !== 'home' && (
+            {activeTab === 'routine' && showRoutines && (
+              <RoutineTab routines={routines} today={formatDate(new Date())} getCheck={getRoutineCheck} isExerciseDay={isRoutineExerciseDay}
+                actions={routineActions} onSave={saveRoutine} onArchiveToggle={toggleRoutineArchive} onDelete={deleteRoutine} onMove={moveRoutine} loading={routinesLoading} />
+            )}
+
+            {activeTab !== 'home' && activeTab !== 'routine' && (
               <div className="space-y-6 animate-fade-in">
                 {activeTab === 'analysis' && analysisView === 'period' && (
                 <HealthTagSummary items={periodLogs} title={`${statsMode === 'month' ? '월간' : '주간'} 건강 영향`} />
@@ -3791,11 +4599,17 @@
           )}
 
           <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-3 py-2 pb-safe shadow-[0_-10px_40px_rgba(0,0,0,0.05)] z-40" data-bottom-nav>
-            <div className="max-w-lg mx-auto grid grid-cols-3 items-center">
+            <div className={`max-w-lg mx-auto grid ${showRoutines ? 'grid-cols-4' : 'grid-cols-3'} items-center`}>
               <button aria-label="홈 화면" onClick={() => { if(activeTab === 'home') setCurrentDate(formatDate(new Date())); else setActiveTab('home'); }} className={`flex flex-col items-center py-2 min-w-0 transition ${activeTab === 'home' ? 'text-blue-600' : 'text-gray-400 hover:text-gray-600'}`}>
                 <span className="text-xl mb-0.5">🏠</span>
                 <span className="text-[11px] font-bold whitespace-nowrap">홈</span>
               </button>
+              {showRoutines && (
+              <button aria-label="루틴 화면" onClick={() => setActiveTab('routine')} className={`flex flex-col items-center py-2 min-w-0 transition ${activeTab === 'routine' ? 'text-emerald-600' : 'text-gray-400 hover:text-gray-600'}`}>
+                <span className="text-xl mb-0.5">🌱</span>
+                <span className="text-[11px] font-bold whitespace-nowrap">루틴</span>
+              </button>
+              )}
               <button aria-label="건강 현황 화면" onClick={() => setActiveTab('status')} className={`flex flex-col items-center py-2 min-w-0 transition ${activeTab === 'status' ? 'text-blue-600' : 'text-gray-400 hover:text-gray-600'}`}>
                 <span className="text-xl mb-0.5">📊</span>
                 <span className="text-[11px] font-bold whitespace-nowrap">현황</span>
