@@ -52,7 +52,7 @@ new vm.Script(
   html.match(/const getWeekRange = \(dateStr\) => \{[\s\S]*?\n    \};\n/)[0] +
   'const getKoreanWeekLabel = () => "";\n' +
   grab('    const ROUTINE_SLOTS = [', '    function RoutineCheckButton(') +
-  '\n;Object.assign(globalThis, { isRoutineDue, routineDayState, computeRoutineStats, buildTodayRoutineGroups, currentRoutineSlot, describeRoutineSchedule, compareRoutines, matchExerciseToRoutines, routineSlotForTime, splitHomeRoutines, homeMissedLabel });'
+  '\n;Object.assign(globalThis, { isRoutineDue, routineDayState, computeRoutineStats, buildTodayRoutineGroups, currentRoutineSlot, describeRoutineSchedule, compareRoutines, matchExerciseToRoutines, routineSlotForTime, splitHomeRoutines, homeMissedLabel, routineTapCompletes });'
 ).runInContext(ctx);
 
 const R = (extra) => ({ id: 'r', name: 'x', kind: 'check', target: 1, step: 1, schedule_type: 'daily', weekdays: [], month_days: [], interval_days: null, start_date: '2026-01-01', time_slot: 'anytime', time_of_day: null, sort_order: 0, archived_at: null, link_exercise: false, ...extra });
@@ -227,14 +227,30 @@ const R = (extra) => ({ id: 'r', name: 'x', kind: 'check', target: 1, step: 1, s
     'const missedMode = !split.upcoming.length && split.missed.length > 0;',
     '⏰ 놓친 루틴 마저 하기',
     'data-home-missed',
-    "if (leaving[r.id]) { clearLeaving(r.id); onTap(r, date); return; }",
-    "setTimeout(() => setLeaving(p => (r.id in p ? { ...p, [r.id]: 'fade' } : p)), 700)",
-    'setTimeout(() => clearLeaving(r.id), 1000)',
-    "const completes = r.kind !== 'count' || ((check?.value || 0) + (r.step || 1)) >= r.target;",
+    "if (leaving[routine.id]) { cancel(routine.id); onTap(); return; }",
+    'const ROUTINE_LEAVE_HOLD_MS = 700, ROUTINE_LEAVE_FADE_MS = 300;',
+    'const tapChip = (r) => leaveTap(r, getCheck(r.id, date), stateOf(r), () => onTap(r, date));',
+    'const tapRow = (r) => leaveTap(r, getCheck(r.id, date), stateOf(r), () => actions.tap(r, date));',
+    "onTap={() => tapRow(r)}",
+    "const finished = all.filter(r => ['done', 'skipped'].includes(stateOf(r)) && !leaving[r.id]).sort(compareRoutines);",
+    '.rt-row-fade { grid-template-rows: 0fr; opacity: 0; }',
     '.rt-strike::after',
     '@media (prefers-reduced-motion: reduce)',
   ]) assert.ok(html.includes(text), text);
-  pass('screen: missed mode, missed line, check fades after 0.7s + 0.3s, tap again undoes, count only when target reached, reduced motion');
+  assert.equal(html.split('useRoutineLeaving(date)').length - 1, 3, 'one shared effect used by home and routine tab');
+  pass('screen: missed mode, missed line, shared check effect (0.7s + 0.3s) on home chips and routine tab rows, tap again undoes, finished list in day order, reduced motion');
+
+  const done = ctx.routineTapCompletes;
+  assert.equal(done(R(), null, 'todo'), true);
+  assert.equal(done(R(), { status: 'done' }, 'done'), false, 'undo is not a completion');
+  assert.equal(done(R(), { status: 'skipped' }, 'skipped'), false);
+  const cnt = R({ kind: 'count', target: 30, step: 10 });
+  assert.deepEqual([0, 10, 20].map(v => done(cnt, { value: v }, v ? 'progress' : 'todo')), [false, false, true]);
+  pass('only a tap that completes the routine starts the effect (count: when the target is reached)');
+
+  const evening = ctx.buildTodayRoutineGroups(items, '2026-11-10', true, 'evening').flatMap(g => g.items);
+  assert.deepEqual(names([...evening].sort(ctx.compareRoutines)), ['아침운동', '영양제', '점심산책', '저녁명상', '자기전', '물']);
+  pass('finished routines are listed in day order, not now-first');
 }
 
 console.log(`\n${passed} passed`);
