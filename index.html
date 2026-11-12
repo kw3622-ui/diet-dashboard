@@ -696,14 +696,33 @@
       }
     }
 
-    // done(완료) / skipped(건너뜀) / progress(횟수형 진행 중) / todo(아직). 운동 연결 루틴은 운동 기록이 있으면 완료.
-    function routineDayState(routine, check, exerciseDone) {
+    // done(완료) / skipped(건너뜀) / progress(횟수형 진행 중) / todo(아직).
+    // 운동 연결 루틴은 그 시간대의 운동 기록이 있으면 완료(autoDone). 단, 내가 직접 남긴 체크가 있으면 그것이 우선한다.
+    function routineDayState(routine, check, autoDone) {
       if (check?.status === 'skipped') return 'skipped';
       if (check?.status === 'done') return 'done';
       if (routine.kind === 'count' && (check?.value || 0) >= routine.target) return 'done';
-      if (routine.link_exercise && exerciseDone) return 'done';
+      if (!check && routine.link_exercise && autoDone) return 'done';
       if (routine.kind === 'count' && (check?.value || 0) > 0) return 'progress';
       return 'todo';
+    }
+
+    // 운동 기록 시각이 속한 시간대(currentRoutineSlot과 같은 경계). 시각이 없으면 '언제든'.
+    function routineSlotForTime(time) {
+      const hour = parseInt(String(time || '').slice(0, 2), 10);
+      return Number.isFinite(hour) ? currentRoutineSlot(new Date(2000, 0, 1, hour, 0)) : 'anytime';
+    }
+
+    // 운동 기록 하나는 연결된 루틴 하나만 완료한다. 같은 시간대 루틴을 먼저, 없으면 '언제든' 루틴에 붙인다.
+    function matchExerciseToRoutines(linkedRoutines, times) {
+      const matched = new Set();
+      [...(times || [])].sort().forEach(time => {
+        const slot = routineSlotForTime(time);
+        const pick = linkedRoutines.find(r => !matched.has(r.id) && (r.time_slot || 'anytime') === slot)
+          || linkedRoutines.find(r => !matched.has(r.id) && (r.time_slot || 'anytime') === 'anytime');
+        if (pick) matched.add(pick.id);
+      });
+      return matched;
     }
 
     function describeRoutineSchedule(routine) {
@@ -727,7 +746,7 @@
 
     // 연속 일수·최고 연속·최근 30일 달성률·이번 주(월~일) 진행. 건너뛴 날은 연속을 끊지 않고 계산에서 뺀다.
     // 오늘 아직 안 한 루틴은 연속을 끊지 않는다(어제까지로 센다). 달성률·이번 주 진행에는 오늘 할 것도 포함한다.
-    function computeRoutineStats(routine, getCheck, isExerciseDay, today, lookbackDays = ROUTINE_LOOKBACK_DAYS) {
+    function computeRoutineStats(routine, getCheck, isAutoDone, today, lookbackDays = ROUTINE_LOOKBACK_DAYS) {
       const first = parseDate(today);
       first.setDate(first.getDate() - lookbackDays);
       const startDate = routine.start_date && routine.start_date > formatDate(first) ? routine.start_date : formatDate(first);
@@ -735,7 +754,7 @@
       for (let d = parseDate(startDate); formatDate(d) <= today; d.setDate(d.getDate() + 1)) {
         const date = formatDate(d);
         if (!isRoutineDue(routine, date)) continue;
-        days.push({ date, state: routineDayState(routine, getCheck(routine.id, date), isExerciseDay(date)) });
+        days.push({ date, state: routineDayState(routine, getCheck(routine.id, date), isAutoDone(routine, date)) });
       }
       let current = 0;
       for (let i = days.length - 1; i >= 0; i--) {
@@ -760,7 +779,7 @@
         const date = formatDate(d);
         if (!isRoutineDue(routine, date)) { week.push({ date, state: 'none' }); continue; }
         if (date > today) { week.push({ date, state: getCheck(routine.id, date)?.status === 'skipped' ? 'skipped' : 'future' }); continue; }
-        const state = routineDayState(routine, getCheck(routine.id, date), isExerciseDay(date));
+        const state = routineDayState(routine, getCheck(routine.id, date), isAutoDone(routine, date));
         week.push({ date, state: state === 'done' || state === 'skipped' ? state : date === today ? 'today' : 'missed' });
       }
       const weekDue = week.filter(x => x.state !== 'none' && x.state !== 'skipped').length;
@@ -865,13 +884,13 @@
     }
 
     // 홈: 오늘의 루틴 카드
-    function TodayRoutineCard({ routines, date, isToday, getCheck, isExerciseDay, actions, onOpenRoutineTab, onShiftDay }) {
+    function TodayRoutineCard({ routines, date, isToday, getCheck, isAutoDone, actions, onOpenRoutineTab, onShiftDay }) {
       const [showDone, setShowDone] = useState(false);
       const active = (routines || []).filter(r => !r.archived_at);
       const nowSlot = currentRoutineSlot();
       const groups = buildTodayRoutineGroups(routines, date, isToday, nowSlot);
       const all = groups.flatMap(g => g.items);
-      const stateOf = (r) => routineDayState(r, getCheck(r.id, date), isExerciseDay(date));
+      const stateOf = (r) => routineDayState(r, getCheck(r.id, date), isAutoDone(r, date));
       const doneCount = all.filter(r => stateOf(r) === 'done').length;
       const skippedCount = all.filter(r => stateOf(r) === 'skipped').length;
       const finished = all.filter(r => ['done', 'skipped'].includes(stateOf(r)));
@@ -933,10 +952,10 @@
     }
 
     // ★ 홈: 한두 줄짜리 루틴 요약. 지금 할 것 3개까지 칩으로 바로 체크하고, 나머지는 루틴 탭에서.
-    function HomeRoutineStrip({ routines, date, isToday, getCheck, isExerciseDay, onTap, onOpenRoutineTab }) {
+    function HomeRoutineStrip({ routines, date, isToday, getCheck, isAutoDone, onTap, onOpenRoutineTab }) {
       const active = (routines || []).filter(r => !r.archived_at);
       const all = buildTodayRoutineGroups(routines, date, isToday, currentRoutineSlot()).flatMap(g => g.items);
-      const stateOf = (r) => routineDayState(r, getCheck(r.id, date), isExerciseDay(date));
+      const stateOf = (r) => routineDayState(r, getCheck(r.id, date), isAutoDone(r, date));
       const counted = all.filter(r => stateOf(r) !== 'skipped');
       const done = counted.filter(r => stateOf(r) === 'done').length;
       const open = all.filter(r => !['done', 'skipped'].includes(stateOf(r)));
@@ -1100,7 +1119,7 @@
             </div>
             <label className="flex items-center gap-2 text-sm text-gray-600">
               <input type="checkbox" checked={d.link_exercise} onChange={e => set({ link_exercise: e.target.checked })} />
-              그날 운동을 기록하면 자동으로 완료
+              운동을 기록하면 자동으로 완료 (기록 시각이 이 루틴 시간대일 때, 언제든이면 그날 아무 때나)
             </label>
             {error && <p className="text-sm text-red-500">{error}</p>}
             <div className="flex gap-2">
@@ -1116,7 +1135,7 @@
     const ROUTINE_WEEK_LABELS = ['월', '화', '수', '목', '금', '토', '일'];
 
     // 루틴 상세: 한 달 달력 + 기록
-    function RoutineDetail({ routine, today, getCheck, isExerciseDay, stats, onEdit, onArchiveToggle, onDelete, onClose }) {
+    function RoutineDetail({ routine, today, getCheck, isAutoDone, stats, onEdit, onArchiveToggle, onDelete, onClose }) {
       const [month, setMonth] = useState(today.slice(0, 7));
       const [confirmDelete, setConfirmDelete] = useState(false);
       const first = parseDate(month + '-01');
@@ -1126,7 +1145,7 @@
       const shiftMonth = (n) => { const d = parseDate(month + '-01'); d.setMonth(d.getMonth() + n); setMonth(formatDate(d).slice(0, 7)); };
       const cellClass = (date) => {
         if (!isRoutineDue(routine, date)) return 'text-gray-300';
-        const s = routineDayState(routine, getCheck(routine.id, date), isExerciseDay(date));
+        const s = routineDayState(routine, getCheck(routine.id, date), isAutoDone(routine, date));
         if (s === 'done') return 'bg-emerald-500 text-white font-bold';
         if (s === 'skipped') return 'bg-gray-200 text-gray-500';
         if (date > today) return 'border border-emerald-200 text-gray-500';
@@ -1177,7 +1196,7 @@
     }
 
     // 루틴 탭
-    function RoutineTab({ routines, today, getCheck, isExerciseDay, actions, onSave, onArchiveToggle, onDelete, onMove, loading }) {
+    function RoutineTab({ routines, today, getCheck, isAutoDone, actions, onSave, onArchiveToggle, onDelete, onMove, loading }) {
       const [formFor, setFormFor] = useState(null); // null | 'new' | routine
       const [viewDate, setViewDate] = useState(today);
       const [detailId, setDetailId] = useState(null);
@@ -1185,7 +1204,7 @@
       const [reorder, setReorder] = useState(false);
       const active = (routines || []).filter(r => !r.archived_at).sort(compareRoutines);
       const archived = (routines || []).filter(r => r.archived_at);
-      const statsOf = (r) => computeRoutineStats(r, getCheck, isExerciseDay, today);
+      const statsOf = (r) => computeRoutineStats(r, getCheck, isAutoDone, today);
       const detail = (routines || []).find(r => r.id === detailId);
       const row = (r) => {
         const st = statsOf(r);
@@ -1222,7 +1241,7 @@
       };
       return (
         <div className="space-y-4 animate-fade-in" data-routine-tab>
-          <TodayRoutineCard routines={routines} date={viewDate} isToday={viewDate === today} getCheck={getCheck} isExerciseDay={isExerciseDay} actions={actions}
+          <TodayRoutineCard routines={routines} date={viewDate} isToday={viewDate === today} getCheck={getCheck} isAutoDone={isAutoDone} actions={actions}
             onShiftDay={(n) => { const d = parseDate(viewDate); d.setDate(d.getDate() + n); setViewDate(formatDate(d)); }} />
           <div className="flex items-center justify-between">
             <h3 className="font-bold text-gray-800">내 루틴 {active.length}개</h3>
@@ -1249,7 +1268,7 @@
               onSave={async (data) => { const ok = await onSave(formFor === 'new' ? null : formFor, data); if (ok !== false) setFormFor(null); return ok; }} />
           )}
           {detail && !formFor && (
-            <RoutineDetail routine={detail} today={today} getCheck={getCheck} isExerciseDay={isExerciseDay} stats={statsOf(detail)}
+            <RoutineDetail routine={detail} today={today} getCheck={getCheck} isAutoDone={isAutoDone} stats={statsOf(detail)}
               onClose={() => setDetailId(null)} onEdit={() => setFormFor(detail)}
               onArchiveToggle={async () => { await onArchiveToggle(detail); setDetailId(null); }}
               onDelete={async () => { await onDelete(detail); setDetailId(null); }} />
@@ -1837,11 +1856,19 @@
       // ★ v0.4.0 루틴. 체크는 "루틴id|날짜" 키로 보관한다.
       const [routines, setRoutines] = useState([]);
       const [routineChecks, setRoutineChecks] = useState({});
-      const [routineExerciseDates, setRoutineExerciseDates] = useState(() => new Set());
+      const [routineExerciseTimes, setRoutineExerciseTimes] = useState({}); // 날짜 → 운동 기록 시각 목록
       const [routinesLoading, setRoutinesLoading] = useState(false);
       const routineKey = (routineId, date) => `${routineId}|${date}`;
       const getRoutineCheck = (routineId, date) => routineChecks[routineKey(routineId, date)] || null;
-      const isRoutineExerciseDay = (date) => routineExerciseDates.has(date) || (date === currentDate && logs.some(l => l.category === '운동'));
+      // 보고 있는 날짜는 화면에 불러온 기록(방금 저장·수정·삭제한 것 포함)을 쓴다.
+      const exerciseTimesOn = (date) => date === currentDate
+        ? logs.filter(l => l.category === '운동').map(l => l.time)
+        : (routineExerciseTimes[date] || []);
+      const isRoutineAutoDone = (routine, date) => {
+        if (!routine?.link_exercise) return false;
+        const linked = routines.filter(r => r.link_exercise && isRoutineDue(r, date)).sort(compareRoutines);
+        return matchExerciseToRoutines(linked, exerciseTimesOn(date)).has(routine.id);
+      };
 
       const fetchRoutineData = async () => {
         if (!session) return;
@@ -1863,11 +1890,13 @@
           const [routineRows, checkRows, exerciseRows] = await Promise.all([
             pageAll((a, b) => sb.from('routines').select('*').order('sort_order', { ascending: true }).order('created_at', { ascending: true }).range(a, b)),
             pageAll((a, b) => sb.from('routine_checks').select('*').gte('check_date', sinceStr).order('check_date', { ascending: true }).range(a, b)),
-            pageAll((a, b) => sb.from('logs').select('log_date').eq('category', '운동').gte('log_date', sinceStr).order('log_date', { ascending: true }).range(a, b)),
+            pageAll((a, b) => sb.from('logs').select('log_date, log_time').eq('category', '운동').gte('log_date', sinceStr).order('log_date', { ascending: true }).range(a, b)),
           ]);
           setRoutines(routineRows);
           setRoutineChecks(Object.fromEntries(checkRows.map(c => [routineKey(c.routine_id, c.check_date), c])));
-          setRoutineExerciseDates(new Set(exerciseRows.map(r => r.log_date)));
+          const times = {};
+          exerciseRows.forEach(r => { (times[r.log_date] = times[r.log_date] || []).push(String(r.log_time || '').slice(0, 5)); });
+          setRoutineExerciseTimes(times);
         } catch (err) {
           console.error(err); // 루틴만 비워 두고 다른 화면은 그대로 쓴다
         } finally {
@@ -1907,19 +1936,26 @@
         if (error) { setRoutineChecks(p => ({ ...p, [key]: prev })); showNotice(ROUTINE_SAVE_FAILED); }
       };
 
-      // 완료를 되돌릴 때 메모가 있으면 메모는 남긴다.
+      // 완료를 되돌릴 때 메모가 있거나, 지우면 운동 기록으로 다시 자동 완료되는 경우에는 "안 함" 체크를 남긴다.
       const undoRoutineCheck = (routine, date) => {
         const check = getRoutineCheck(routine.id, date);
-        if (check?.note) return putRoutineCheck(routine, date, { status: 'progress', value: 0 });
+        if (check?.note || isRoutineAutoDone(routine, date)) return putRoutineCheck(routine, date, { status: 'progress', value: 0 });
         return deleteRoutineCheck(routine, date);
       };
 
       const routineActions = {
         tap: (routine, date) => {
           const check = getRoutineCheck(routine.id, date);
-          const state = routineDayState(routine, check, isRoutineExerciseDay(date));
-          if (state === 'done' && !check) { showNotice('운동 기록으로 자동 완료된 루틴이에요. 쉬는 날이면 ⋯에서 건너뛰기를 고르세요.'); return; }
-          if (state === 'done' || state === 'skipped') return undoRoutineCheck(routine, date);
+          const state = routineDayState(routine, check, isRoutineAutoDone(routine, date));
+          if (state === 'done' && !check) {
+            showNotice('운동 기록으로 된 자동 완료를 풀었어요. 다시 자동으로 하려면 ⋯ → 체크 지우기를 누르세요.');
+            return putRoutineCheck(routine, date, { status: 'progress', value: 0 });
+          }
+          if (state === 'skipped') {
+            if (check?.note) return putRoutineCheck(routine, date, { status: isRoutineAutoDone(routine, date) ? 'done' : 'progress', value: 0 });
+            return deleteRoutineCheck(routine, date);
+          }
+          if (state === 'done') return undoRoutineCheck(routine, date);
           if (routine.kind === 'count') {
             const value = (check?.value || 0) + (routine.step || 1);
             return putRoutineCheck(routine, date, { value, status: value >= routine.target ? 'done' : 'progress' });
@@ -1928,7 +1964,11 @@
         },
         toggleSkip: (routine, date) => {
           const check = getRoutineCheck(routine.id, date);
-          if (check?.status === 'skipped') return undoRoutineCheck(routine, date);
+          if (check?.status === 'skipped') {
+            // 건너뜀을 풀면 원래 상태로: 메모가 있으면 남기고, 운동 자동 완료 대상이면 완료로 돌아간다.
+            if (check.note) return putRoutineCheck(routine, date, { status: isRoutineAutoDone(routine, date) ? 'done' : 'progress', value: 0 });
+            return deleteRoutineCheck(routine, date);
+          }
           return putRoutineCheck(routine, date, { status: 'skipped' });
         },
         setValue: (routine, date, value) => putRoutineCheck(routine, date, { value, status: value >= routine.target ? 'done' : 'progress' }),
@@ -1936,6 +1976,8 @@
           const check = getRoutineCheck(routine.id, date);
           if (!check && !note) return;
           if (!note && check && check.status === 'progress' && !check.value) return deleteRoutineCheck(routine, date);
+          // 자동 완료된 루틴에 메모만 남겨도 완료는 그대로 둔다.
+          if (!check && isRoutineAutoDone(routine, date)) return putRoutineCheck(routine, date, { note, status: 'done' });
           return putRoutineCheck(routine, date, { note });
         },
         clear: (routine, date) => deleteRoutineCheck(routine, date),
@@ -3489,7 +3531,7 @@
 
                 {showRoutines && (
                   <HomeRoutineStrip routines={routines} date={currentDate} isToday={currentDate === formatDate(new Date())}
-                    getCheck={getRoutineCheck} isExerciseDay={isRoutineExerciseDay} onTap={routineActions.tap}
+                    getCheck={getRoutineCheck} isAutoDone={isRoutineAutoDone} onTap={routineActions.tap}
                     onOpenRoutineTab={() => { setActiveTab('routine'); window.scrollTo(0, 0); }} />
                 )}
 
@@ -3706,7 +3748,7 @@
             )}
 
             {activeTab === 'routine' && showRoutines && (
-              <RoutineTab routines={routines} today={formatDate(new Date())} getCheck={getRoutineCheck} isExerciseDay={isRoutineExerciseDay}
+              <RoutineTab routines={routines} today={formatDate(new Date())} getCheck={getRoutineCheck} isAutoDone={isRoutineAutoDone}
                 actions={routineActions} onSave={saveRoutine} onArchiveToggle={toggleRoutineArchive} onDelete={deleteRoutine} onMove={moveRoutine} loading={routinesLoading} />
             )}
 
