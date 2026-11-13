@@ -18,7 +18,13 @@ new vm.Script(
   "const SUPPLEMENT_CATEGORY = '건강식품';\nconst isSupplementLog = (log) => log?.category === SUPPLEMENT_CATEGORY;\n" +
   html.match(/const formatDate = [^\n]*\n/)[0] +
   grab('    const SUPPLEMENT_NUTRIENTS = {', '    // 건강식품 기록 아래:') +
-  grab('    // ★ v0.4.4 복용 관리: 오래 먹는', '    // 홈 💊 복용 버튼') +
+  // v0.4.5부터는 계산 함수 뒤에 홈 복용 줄(JSX)이 먼저 나오므로 둘 중 앞의 표시까지만 자른다.
+  (() => {
+    const i = html.indexOf('    // ★ v0.4.4 복용 관리: 오래 먹는');
+    const ends = ['    // 홈: 루틴 칸 아래 한 줄.', '    // 홈 💊 복용 버튼'].map(m => html.indexOf(m, i)).filter(j => j > i);
+    assert.ok(i > 0 && ends.length);
+    return html.slice(i, Math.min(...ends));
+  })() +
   '\n;Object.assign(globalThis, { supplementNutrientsOf, supplementPairNotes, isIntakeDue, intakeDueRows, intakeSupplementLogs, intakeTipsFor, intakeCheckKey });'
 ).runInContext(ctx);
 const L = (id, time, names, category = '건강식품') => ({ id, date: '2026-11-13', time, category, foodName: names[0], ingredients: names.map(n => n + '(1알)') });
