@@ -33,6 +33,20 @@
     .no-scrollbar::-webkit-scrollbar { display: none; }
     .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
     .pb-nav { padding-bottom: 148px; }
+    /* v0.4.3 홈 루틴 칩: 체크하면 줄을 긋고 잠깐 보여 준 뒤 서서히 사라진다 */
+    .rt-strike { position: relative; }
+    .rt-strike::after { content: ''; position: absolute; left: 0; right: 0; top: 52%; height: 1.5px; background: currentColor; transform-origin: left; animation: rtStrike .25s ease-out both; }
+    @keyframes rtStrike { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+    .rt-chip { transition: opacity .3s ease, transform .3s ease, max-width .3s ease, padding .3s ease, margin .3s ease, background-color .2s ease; max-width: 22rem; }
+    .rt-chip-fade { opacity: 0; transform: scale(.85); max-width: 0 !important; padding-left: 0 !important; padding-right: 0 !important; border-width: 0 !important; margin-right: -0.375rem; }
+    /* 루틴 탭 줄: 줄 높이가 접히며 사라진다 */
+    .rt-row { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .3s ease, opacity .3s ease; }
+    .rt-row-inner { min-height: 0; overflow: hidden; }
+    .rt-row-fade { grid-template-rows: 0fr; opacity: 0; }
+    @media (prefers-reduced-motion: reduce) {
+      .rt-chip, .rt-progress, .rt-row { transition: none !important; }
+      .rt-strike::after { animation: none; }
+    }
   </style>
 </head>
 <body>
@@ -70,6 +84,7 @@
       followupAnswer: row.followup_answer || null,
       exerciseMeta: row.exercise_meta || row.exerciseMeta || null,
       portionCheck: row.portion_check || row.portionCheck || null,
+      supplementInfo: row.supplement_info || row.supplementInfo || null,
       healthTags: (row.food_health_tags || row.healthTags || []).map(tag => ({
         foodIndex: tag.food_index ?? tag.foodIndex ?? 0,
         foodName: tag.food_name ?? tag.foodName ?? '',
@@ -381,7 +396,10 @@
       return { start: formatDate(start), end: formatDate(end), label: `${d.getFullYear()}년 ${d.getMonth() + 1}월` };
     };
 
-    const defaultCategories = ['아침식사', '점심식사', '저녁식사', '간식', '야식', '운동'];
+    const defaultCategories = ['아침식사', '점심식사', '저녁식사', '간식', '야식', '건강식품', '운동'];
+    // ★ v0.4.4 건강식품(영양제·발효효소·유산균 등): 식사·간식으로 세지 않는다. 서버(diet-ai_v0.0.19)와 같은 이름.
+    const SUPPLEMENT_CATEGORY = '건강식품';
+    const isSupplementLog = (log) => log?.category === SUPPLEMENT_CATEGORY;
     const mealSlotDefinitions = [
       { key: 'breakfast', category: '아침식사', label: '아침', icon: '🌅', anchorTime: '08:00', minTime: '05:00', maxTime: '11:30' },
       { key: 'lunch', category: '점심식사', label: '점심', icon: '☀️', anchorTime: '13:00', minTime: '10:30', maxTime: '16:30' },
@@ -416,6 +434,7 @@
         '간식': '🍪 간식 기록',
         '야식': '🌃 야식 기록',
         '운동': '🏃 운동 기록',
+        '건강식품': '💊 건강식품 기록',
       };
       return titles[category] || '📝 건강 기록';
     };
@@ -495,6 +514,457 @@
       });
 
       return Object.keys(latest).length ? { ...latest, dates } : null;
+    }
+
+    // ★ v0.4.4 건강식품 궁합: AI에 맡기지 않고, 교과서에 나오는 몇 가지만 정해 둔다. 목록에 없는 조합은 아무 말도 하지 않는다.
+    const SUPPLEMENT_NUTRIENTS = {
+      calcium: { label: '칼슘', words: ['칼슘', 'calcium'] },
+      iron: { label: '철분', words: ['철분', '헴철', 'iron'] },
+      vitaminC: { label: '비타민 C', words: ['비타민c', 'vitaminc', '아스코르브'] },
+      zinc: { label: '아연', words: ['아연', 'zinc'] },
+      omega3: { label: '오메가3', words: ['오메가3', '오메가-3', 'omega3', 'omega-3', '크릴오일', 'epa', 'dha'] },
+      vitaminD: { label: '비타민 D', words: ['비타민d', 'vitamind'] },
+      vitaminE: { label: '비타민 E', words: ['비타민e', 'vitamine'] },
+      vitaminK: { label: '비타민 K', words: ['비타민k', 'vitamink'] },
+    };
+    const SUPPLEMENT_PAIR_RULES = [
+      { a: 'calcium', b: 'iron', kind: 'caution', spacing: true, text: '칼슘과 철분은 같이 먹으면 서로 흡수가 떨어질 수 있어요. 2시간쯤 간격을 두는 게 일반적이에요.' },
+      { a: 'zinc', b: 'iron', kind: 'caution', spacing: true, text: '아연과 철분을 많이 같이 먹으면 서로 흡수를 방해할 수 있어요. 시간 간격을 두는 게 좋아요.' },
+      { a: 'iron', b: 'vitaminC', kind: 'good', spacing: false, text: '철분은 비타민 C와 함께 먹으면 흡수가 잘돼요.' },
+    ];
+    function supplementNutrientsOf(log) {
+      const text = [log?.foodName, ...(Array.isArray(log?.ingredients) ? log.ingredients : [])].join(' ').toLowerCase().replace(/\s+/g, '');
+      return Object.keys(SUPPLEMENT_NUTRIENTS).filter(key => SUPPLEMENT_NUTRIENTS[key].words.some(w => text.includes(w)));
+    }
+    const minutesOfTime = (t) => { const [h, m] = String(t || '').split(':').map(Number); return Number.isFinite(h) ? h * 60 + (m || 0) : null; };
+    // 이 기록과 같은 날 건강식품 기록(자기 자신 포함) 사이에서 목록에 있는 조합을 찾는다.
+    function supplementPairNotes(log, dayLogs) {
+      if (!isSupplementLog(log)) return [];
+      const mine = supplementNutrientsOf(log);
+      if (!mine.length) return [];
+      const others = (dayLogs || []).filter(l => isSupplementLog(l) && l.date === log.date);
+      const notes = [];
+      SUPPLEMENT_PAIR_RULES.forEach(rule => {
+        [[rule.a, rule.b], [rule.b, rule.a]].forEach(([x, y]) => {
+          if (!mine.includes(x) || notes.some(n => n.rule === rule)) return;
+          const partner = others.find(l => supplementNutrientsOf(l).includes(y));
+          if (!partner) return;
+          const gap = partner.id === log.id ? 0 : Math.abs((minutesOfTime(partner.time) ?? 0) - (minutesOfTime(log.time) ?? 0));
+          if (rule.spacing && gap >= 120) {
+            notes.push({ rule, kind: 'ok', text: `${SUPPLEMENT_NUTRIENTS[x].label}과 ${SUPPLEMENT_NUTRIENTS[y].label}을 2시간 넘게 간격을 두고 드셨어요 👍` });
+          } else {
+            notes.push({ rule, kind: rule.kind, text: rule.text });
+          }
+        });
+      });
+      return notes;
+    }
+
+    // 건강식품 기록 아래: 포장 표시 기능성, 궁합 목록, 접어 둔 AI 참고.
+    function SupplementInfoBox({ log, dayLogs }) {
+      const [open, setOpen] = useState(false);
+      if (!isSupplementLog(log)) return null;
+      const info = log.supplementInfo || {};
+      const notes = supplementPairNotes(log, dayLogs);
+      return (
+        <div className="mt-2 space-y-1.5" data-supplement-info>
+          {info.labelClaim && (
+            <p className="text-xs bg-violet-50 text-violet-800 rounded-xl px-3 py-2 break-keep" data-supplement-label>
+              📦 <b>포장 표시 기능성</b> · {info.labelClaim}
+            </p>
+          )}
+          {notes.map((note, i) => (
+            <p key={i} className={`text-xs rounded-xl px-3 py-2 break-keep ${note.kind === 'caution' ? 'bg-amber-50 text-amber-800' : 'bg-emerald-50 text-emerald-800'}`} data-supplement-pair>
+              {note.kind === 'caution' ? '⚠️' : '🔗'} {note.text}
+            </p>
+          ))}
+          {info.aiNote && (
+            <div className="bg-gray-50 rounded-xl px-3 py-2" data-supplement-ai>
+              <button type="button" onClick={() => setOpen(!open)} className="w-full text-left text-[11px] font-bold text-gray-500">
+                🤖 AI 참고 · 확인 안 된 정보 {open ? '▲' : '▼'}
+              </button>
+              {open && (
+                <div className="mt-1.5 space-y-1">
+                  <p className="text-xs text-gray-600 leading-snug whitespace-pre-wrap break-keep">{info.aiNote}</p>
+                  <p className="text-[11px] text-gray-400 break-keep">AI가 의학 근거를 바탕으로 쓰려고 했지만 틀릴 수 있어요. 드시는 약이 있으면 약사와 확인하세요.</p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ★ v0.4.4 복용 관리: 오래 먹는 건강식품·약을 등록하고 날짜·시간대별로 체크한다(체크에는 AI를 쓰지 않음).
+    // 약(medicine)은 AI 설명·팁·궁합이 없고 AI 리포트에도 보내지 않는다.
+    const INTAKE_SLOTS = [
+      { key: 'morning', label: '아침', time: '08:00' },
+      { key: 'lunch', label: '점심', time: '12:30' },
+      { key: 'evening', label: '저녁', time: '19:00' },
+      { key: 'bedtime', label: '자기 전', time: '22:00' },
+    ];
+    const intakeSlotLabel = (key) => (INTAKE_SLOTS.find(s => s.key === key) || INTAKE_SLOTS[0]).label;
+    const intakeKindLabel = (kind) => kind === 'medicine' ? '복용약' : '건강식품';
+    const intakeCheckKey = (itemId, date, slot) => `${itemId}|${date}|${slot}`;
+
+    // 그 날짜에 먹는 항목인가(시작일~종료일, 복용 중단한 날까지).
+    function isIntakeDue(item, date) {
+      if (!item || !date) return false;
+      if (item.start_date && date < item.start_date) return false;
+      if (item.end_date && date > item.end_date) return false;
+      if (item.stopped_at && date > formatDate(new Date(item.stopped_at))) return false;
+      return true;
+    }
+
+    // 그날 체크할 줄: 약 먼저, 그다음 건강식품. 시간대 순서.
+    function intakeDueRows(items, date) {
+      const order = (k) => INTAKE_SLOTS.findIndex(s => s.key === k);
+      const rows = [];
+      (items || []).filter(item => isIntakeDue(item, date)).forEach(item => {
+        [...(item.times || [])].sort((a, b) => order(a) - order(b)).forEach(slot => rows.push({ item, slot }));
+      });
+      return rows.sort((a, b) => (a.item.kind === b.item.kind ? 0 : a.item.kind === 'medicine' ? -1 : 1)
+        || order(a.slot) - order(b.slot) || (a.item.sort_order || 0) - (b.item.sort_order || 0) || String(a.item.name).localeCompare(String(b.item.name)));
+    }
+
+    // 체크한 건강식품을 궁합 계산용 기록 모양으로(약은 넣지 않는다).
+    function intakeSupplementLogs(items, checks, date) {
+      const byId = Object.fromEntries((items || []).map(i => [i.id, i]));
+      return Object.values(checks || {}).filter(c => c.check_date === date && byId[c.item_id]?.kind === 'supplement').map(c => ({
+        id: 'intake-' + c.item_id + '-' + c.slot, date, time: String(c.taken_time || '').slice(0, 5),
+        category: SUPPLEMENT_CATEGORY, foodName: byId[c.item_id].name, ingredients: [byId[c.item_id].name], fromIntake: true,
+      }));
+    }
+
+    // 먹는 때 팁: 근거가 확실한 것만 앱에 정해 둔다. 목록에 없으면 아무것도 표시하지 않는다. 약에는 쓰지 않는다.
+    const INTAKE_TIP_RULES = [
+      { keys: ['omega3', 'vitaminD', 'vitaminE', 'vitaminK'], text: '식후에 (기름과 함께 먹으면 흡수가 잘돼요)' },
+      { keys: ['iron'], text: '공복에 흡수가 잘되지만, 속이 불편하면 식후에' },
+      { keys: ['calcium'], text: '한 번에 많이보다 나눠서' },
+    ];
+    function intakeTipsFor(item) {
+      if (!item || item.kind !== 'supplement') return [];
+      const found = supplementNutrientsOf({ foodName: item.name, ingredients: [] });
+      return INTAKE_TIP_RULES.filter(rule => rule.keys.some(k => found.includes(k))).map(rule => rule.text);
+    }
+
+    // ★ v0.4.5 최근 n일 복용률. 오늘은 체크한 것만 셈(아직 시간이 안 된 것으로 깎지 않는다).
+    // 앱에 등록하기 전 날짜(시작일을 앞으로 적어 둔 경우)는 체크할 수 없었으니 빼되, 그날 체크가 있으면 센다.
+    const intakeRegisteredDate = (item) => item?.created_at ? formatDate(new Date(item.created_at)) : null;
+    function intakeAdherence(items, checks, today, days = 30) {
+      const perItem = {};
+      let due = 0, done = 0;
+      for (let i = days - 1; i >= 0; i--) {
+        const d = parseDate(today); d.setDate(d.getDate() - i);
+        const date = formatDate(d);
+        intakeDueRows(items, date).forEach(({ item, slot }) => {
+          const checked = Boolean(checks[intakeCheckKey(item.id, date, slot)]);
+          if (date === today && !checked) return;
+          const registered = intakeRegisteredDate(item);
+          if (registered && date < registered && !checked) return;
+          const p = perItem[item.id] || (perItem[item.id] = { due: 0, done: 0 });
+          p.due++; due++;
+          if (checked) { p.done++; done++; }
+        });
+      }
+      const rate = (x) => x.due ? Math.round(x.done / x.due * 100) : null;
+      Object.values(perItem).forEach(p => { p.rate = rate(p); });
+      const byKind = (kind) => {
+        const ids = (items || []).filter(i => i.kind === kind).map(i => i.id);
+        const sum = ids.reduce((acc, id) => ({ due: acc.due + (perItem[id]?.due || 0), done: acc.done + (perItem[id]?.done || 0) }), { due: 0, done: 0 });
+        return rate(sum);
+      };
+      return { due, done, rate: rate({ due, done }), perItem, medicine: byKind('medicine'), supplement: byKind('supplement') };
+    }
+
+    // ★ v0.4.5 루틴 "복용 체크를 다 하면 자동 완료": 루틴 시간대(아침·점심·저녁·자기 전)의 등록 항목을 모두 체크했으면 완료.
+    // 그 밖의 시간대·언제든 루틴은 그날 전체. 그날 먹을 등록 항목이 없으면 사진·글 건강식품 기록이 있을 때 완료.
+    function intakeRoutineAutoDone(routine, date, items, checks, hasSupplementLog) {
+      if (!routine?.link_intake) return false;
+      const rows = intakeDueRows(items, date);
+      const slotRows = INTAKE_SLOTS.some(x => x.key === routine.time_slot) ? rows.filter(r => r.slot === routine.time_slot) : rows;
+      if (slotRows.length) return slotRows.every(({ item, slot }) => Boolean(checks[intakeCheckKey(item.id, date, slot)]));
+      return Boolean(hasSupplementLog);
+    }
+
+    // 홈: 루틴 칸 아래 한 줄. 오늘 복용 n/m과 아직 안 한 것.
+    function HomeIntakeStrip({ items, checks, date, isToday, onOpen }) {
+      const rows = intakeDueRows(items, date);
+      if (!rows.length) return null;
+      const done = rows.filter(({ item, slot }) => checks[intakeCheckKey(item.id, date, slot)]);
+      // 남은 것은 시간대 순서로(약·건강식품 구분 없이)
+      const slotOrder = (k) => INTAKE_SLOTS.findIndex(x => x.key === k);
+      const left = rows.filter(r => !done.includes(r)).sort((a, b) => slotOrder(a.slot) - slotOrder(b.slot));
+      const leftText = left.slice(0, 2).map(({ item, slot }) => `${item.name}(${intakeSlotLabel(slot)})`).join(', ') + (left.length > 2 ? ` +${left.length - 2}` : '');
+      return (
+        <button type="button" onClick={onOpen} className="w-full flex items-center gap-2 bg-white rounded-3xl px-4 py-2.5 shadow-sm border border-gray-100 text-left" data-home-intake>
+          <span className="text-sm font-bold text-gray-800 whitespace-nowrap">💊 {isToday ? '오늘' : '이 날'} 복용 <span className="text-violet-600">{done.length}/{rows.length}</span></span>
+          <span className="min-w-0 flex-1 truncate text-[11px] text-gray-400">{left.length ? `남은: ${leftText}` : '다 챙겼어요 🎉'}</span>
+          <span className="text-xs font-bold text-violet-600 shrink-0">→</span>
+        </button>
+      );
+    }
+
+    // 홈 💊 복용 버튼: 오늘 체크 목록
+    function IntakeSheet({ items, checks, date, isToday, dayLogs, adherence, showAck, onAck, onToggle, onOpenManager, onRecordOther, onClose }) {
+      // ★ v0.4.6 식사 기록처럼 창 위에 "먹은 시각" 칸. 오늘은 지금 시각, 지난 날짜는 비워 두면 시간대 기본 시각.
+      // 바꾼 시각은 창을 닫을 때까지 모든 체크에 쓰이고, 창을 다시 열면 처음 값으로 돌아간다.
+      const [sheetTime, setSheetTime] = useState(isToday ? getCurrentTimeStr() : '');
+      const rows = intakeDueRows(items, date);
+      const meds = rows.filter(r => r.item.kind === 'medicine');
+      const supps = rows.filter(r => r.item.kind === 'supplement');
+      const supplementLogs = [...(dayLogs || []).filter(isSupplementLog), ...intakeSupplementLogs(items, checks, date)];
+      const pairNotes = [];
+      supplementLogs.forEach(log => supplementPairNotes(log, supplementLogs).forEach(note => {
+        if (!pairNotes.some(n => n.text === note.text)) pairNotes.push(note);
+      }));
+      const renderRow = ({ item, slot }) => {
+        const check = checks[intakeCheckKey(item.id, date, slot)];
+        const tips = intakeTipsFor(item);
+        const time = String(check?.taken_time || '').slice(0, 5);
+        return (
+          <div key={item.id + slot} className={`flex items-center gap-2 rounded-2xl pl-3 pr-2 py-2.5 border transition ${check ? 'bg-violet-50 border-violet-200' : 'bg-white border-gray-200'}`} data-intake-row>
+            <button type="button" onClick={() => onToggle(item, slot, sheetTime)} aria-label={`${item.name} ${intakeSlotLabel(slot)} ${check ? '체크 취소' : '체크'}`}
+              className="min-w-0 flex-1 flex items-center gap-3 text-left active:scale-[0.99]">
+              <span className={`w-6 h-6 rounded-full border-2 shrink-0 flex items-center justify-center text-xs font-bold ${check ? 'bg-violet-500 border-violet-500 text-white' : 'border-violet-300'}`}>{check ? '✓' : ''}</span>
+              <span className="min-w-0 flex-1">
+                <span className={`block text-sm font-bold break-keep ${check ? 'text-violet-800' : 'text-gray-800'}`}>{item.name}{item.dose && <span className="font-normal text-gray-500"> {item.dose}</span>}</span>
+                <span className="block text-[11px] text-gray-400 break-keep">{intakeSlotLabel(slot)}{item.note ? ` · ${item.note}` : ''}</span>
+                {tips.map((tip, i) => <span key={i} className="block text-[11px] text-emerald-700 break-keep" data-intake-tip>🕗 {tip}</span>)}
+              </span>
+            </button>
+            {check && time && <span className="shrink-0 text-xs font-bold text-violet-600" data-intake-row-time>{time}</span>}
+          </div>
+        );
+      };
+      return (
+        <div className="fixed inset-0 z-[110] bg-black/50 flex items-end sm:items-center justify-center" onClick={onClose} data-intake-sheet>
+          <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl shadow-2xl max-h-[85vh] overflow-y-auto no-scrollbar p-5 pb-safe" onClick={e => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <div className="min-w-0">
+                <h2 className="text-lg font-bold text-gray-900">💊 {isToday ? '오늘' : `${Number(date.slice(5, 7))}/${Number(date.slice(8))}`} 복용</h2>
+                <p className="text-xs text-gray-400">누르면 아래 시각으로 체크, 다시 누르면 취소돼요.</p>
+                {adherence?.rate != null && (
+                  <p className="text-[11px] font-bold text-violet-600 mt-0.5" data-intake-adherence>
+                    최근 30일 복용률 {adherence.rate}%{adherence.medicine != null && adherence.supplement != null ? ` (약 ${adherence.medicine}% · 건강식품 ${adherence.supplement}%)` : ''}
+                  </p>
+                )}
+              </div>
+              <button type="button" onClick={onClose} aria-label="복용 창 닫기" className="w-9 h-9 shrink-0 rounded-full bg-gray-100 text-gray-500 font-bold">✕</button>
+            </div>
+            {rows.length > 0 && (
+              <label className="flex items-center justify-between gap-3 bg-violet-50 rounded-2xl px-3 py-2.5 mb-3" data-intake-sheet-time>
+                <span className="min-w-0">
+                  <span className="block text-sm font-bold text-violet-900">먹은 시각</span>
+                  <span className="block text-[11px] text-violet-600 break-keep">{sheetTime ? '잊고 늦게 체크하면 먼저 실제 시각으로 바꾸세요' : '비워 두면 시간대 기본 시각(아침 08:00 등)'}</span>
+                </span>
+                <input type="time" value={sheetTime} onChange={e => setSheetTime(e.target.value)} aria-label="먹은 시각"
+                  className="shrink-0 w-[7.5rem] text-sm font-bold text-violet-800 bg-white border border-violet-200 rounded-lg px-2 py-1.5" />
+              </label>
+            )}
+            {showAck && (
+              <div className="bg-amber-50 border border-amber-100 rounded-2xl p-3 mb-3" data-intake-ack>
+                <p className="text-xs text-amber-900 break-keep">등록하신 약과 건강식품을 같이 드셔도 되는지 약사에게 한 번 확인해 보세요. 앱은 약과의 궁합을 판단하지 않아요.</p>
+                <button type="button" onClick={onAck} className="mt-2 text-xs font-bold px-3 py-1.5 rounded-lg bg-amber-500 text-white">확인했어요</button>
+              </div>
+            )}
+            {rows.length === 0 ? (
+              <div className="bg-violet-50 rounded-2xl p-4 text-sm text-violet-900 break-keep mb-3">
+                매일 드시는 약이나 건강식품을 등록하면, 여기서 눌러서 체크만 하면 돼요.
+              </div>
+            ) : (
+              <div className="space-y-3 mb-3">
+                {meds.length > 0 && (
+                  <div className="space-y-1.5"><p className="text-[11px] font-bold text-gray-500">복용약</p>{meds.map(renderRow)}</div>
+                )}
+                {supps.length > 0 && (
+                  <div className="space-y-1.5"><p className="text-[11px] font-bold text-gray-500">건강식품</p>{supps.map(renderRow)}</div>
+                )}
+              </div>
+            )}
+            {pairNotes.map((note, i) => (
+              <p key={i} className={`text-xs rounded-xl px-3 py-2 mb-2 break-keep ${note.kind === 'caution' ? 'bg-amber-50 text-amber-800' : 'bg-emerald-50 text-emerald-800'}`} data-intake-pair>
+                {note.kind === 'caution' ? '⚠️' : '🔗'} {note.text}
+              </p>
+            ))}
+            <div className="grid grid-cols-2 gap-2">
+              <button type="button" onClick={onRecordOther} className="text-xs font-bold py-3 rounded-xl bg-violet-50 text-violet-700 border border-violet-100">+ 다른 건강식품 기록<br /><span className="font-normal">(사진/글)</span></button>
+              <button type="button" onClick={onOpenManager} className="text-xs font-bold py-3 rounded-xl bg-gray-100 text-gray-600">⚙️ 등록·관리</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function emptyIntakeDraft(today, kind = 'supplement') {
+      return { id: null, kind, name: '', dose: '', times: ['morning'], note: '', start_date: today, end_date: '', label_claim: '', ai_note: '', photos: [] };
+    }
+
+    // 설정 → 복용 관리: 등록·수정·복용 중단·삭제
+    function IntakeManager({ items, today, initialDraft, busy, adherence, onSave, onStop, onResume, onDelete, onClose }) {
+      const [draft, setDraft] = useState(initialDraft || null);
+      const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+      const [openNoteId, setOpenNoteId] = useState(null);
+      const [showStopped, setShowStopped] = useState(false);
+      const [photoError, setPhotoError] = useState('');
+      const active = (items || []).filter(i => !i.stopped_at && (!i.end_date || i.end_date >= today));
+      const stopped = (items || []).filter(i => !active.includes(i));
+      const set = (fields) => setDraft(d => ({ ...d, ...fields }));
+      const toggleTime = (key) => setDraft(d => {
+        const has = d.times.includes(key);
+        const times = has ? d.times.filter(t => t !== key) : [...d.times, key];
+        return { ...d, times: times.length ? times : d.times };
+      });
+      const addPhotos = async (files) => {
+        setPhotoError('');
+        try {
+          const list = await Promise.all([...files].slice(0, 3).map(compressImage));
+          set({ photos: list });
+        } catch (err) { setPhotoError(err.message); }
+      };
+      const renderItem = (item) => {
+        const tips = intakeTipsFor(item);
+        return (
+          <div key={item.id} className="bg-white border border-gray-100 rounded-2xl p-3" data-intake-item>
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-gray-800 break-keep">{item.name}{item.dose && <span className="font-normal text-gray-500"> {item.dose}</span>}</p>
+                <p className="text-[11px] text-gray-400 break-keep">
+                  {(item.times || []).map(intakeSlotLabel).join('·')}{item.note ? ` · ${item.note}` : ''} · {item.start_date}부터{item.end_date ? ` ${item.end_date}까지` : ''}
+                  {item.stopped_at ? ` · ${formatDate(new Date(item.stopped_at))} 중단` : ''}
+                </p>
+                {tips.map((tip, i) => <p key={i} className="text-[11px] text-emerald-700 break-keep">🕗 {tip}</p>)}
+                {adherence?.perItem?.[item.id]?.rate != null && (
+                  <p className="text-[11px] font-bold text-violet-600" data-intake-item-rate>최근 30일 복용률 {adherence.perItem[item.id].rate}% ({adherence.perItem[item.id].done}/{adherence.perItem[item.id].due}회)</p>
+                )}
+              </div>
+              <div className="flex gap-1 shrink-0">
+                <button type="button" onClick={() => setDraft({ ...emptyIntakeDraft(today), ...item, end_date: item.end_date || '', photos: [] })} className="text-[11px] font-bold px-2 py-1 rounded-lg bg-gray-100 text-gray-600">수정</button>
+                {item.stopped_at
+                  ? <button type="button" onClick={() => onResume(item)} className="text-[11px] font-bold px-2 py-1 rounded-lg bg-violet-50 text-violet-700">다시 먹기</button>
+                  : <button type="button" onClick={() => onStop(item)} className="text-[11px] font-bold px-2 py-1 rounded-lg bg-gray-100 text-gray-600">복용 중단</button>}
+              </div>
+            </div>
+            {item.kind === 'supplement' && item.label_claim && (
+              <p className="mt-1.5 text-xs bg-violet-50 text-violet-800 rounded-xl px-3 py-2 break-keep">📦 <b>포장 표시 기능성</b> · {item.label_claim}</p>
+            )}
+            {item.kind === 'supplement' && item.ai_note && (
+              <div className="mt-1.5 bg-gray-50 rounded-xl px-3 py-2">
+                <button type="button" onClick={() => setOpenNoteId(openNoteId === item.id ? null : item.id)} className="w-full text-left text-[11px] font-bold text-gray-500">
+                  🤖 AI 참고 · 확인 안 된 정보 {openNoteId === item.id ? '▲' : '▼'}
+                </button>
+                {openNoteId === item.id && (
+                  <div className="mt-1.5 space-y-1">
+                    <p className="text-xs text-gray-600 leading-snug whitespace-pre-wrap break-keep">{item.ai_note}</p>
+                    <p className="text-[11px] text-gray-400 break-keep">AI가 의학 근거를 바탕으로 쓰려고 했지만 틀릴 수 있어요. 드시는 약이 있으면 약사와 확인하세요.</p>
+                  </div>
+                )}
+              </div>
+            )}
+            <div className="mt-1.5 text-right">
+              {confirmDeleteId === item.id ? (
+                <span className="text-[11px]">
+                  <span className="text-red-600 font-bold mr-1">체크 기록까지 모두 지워져요. 삭제할까요?</span>
+                  <button type="button" onClick={() => { setConfirmDeleteId(null); onDelete(item); }} className="font-bold px-2 py-1 rounded bg-red-500 text-white mr-1">삭제</button>
+                  <button type="button" onClick={() => setConfirmDeleteId(null)} className="font-bold px-2 py-1 rounded bg-gray-100 text-gray-600">취소</button>
+                </span>
+              ) : (
+                <button type="button" onClick={() => setConfirmDeleteId(item.id)} className="text-[11px] text-gray-400">삭제</button>
+              )}
+            </div>
+          </div>
+        );
+      };
+      const group = (kind) => active.filter(i => i.kind === kind);
+      return (
+        <div className="fixed inset-0 bg-gray-50 z-[105] overflow-y-auto overscroll-contain p-5 pb-24" data-intake-manager>
+          <div className="max-w-lg mx-auto">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-bold text-gray-900">💊 복용 관리</h2>
+              <button type="button" onClick={onClose} aria-label="복용 관리 닫기" className="w-9 h-9 rounded-full bg-white border border-gray-200 text-gray-500 font-bold">✕</button>
+            </div>
+            {draft ? (
+              <form className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100 space-y-4" data-intake-form
+                onSubmit={e => { e.preventDefault(); if (draft.name.trim()) onSave(draft, () => setDraft(null)); }}>
+                <div className="grid grid-cols-2 gap-2">
+                  {['medicine', 'supplement'].map(kind => (
+                    <button key={kind} type="button" disabled={Boolean(draft.id)} onClick={() => set({ kind })}
+                      className={`py-2.5 rounded-xl text-sm font-bold ${draft.kind === kind ? 'bg-violet-600 text-white' : 'bg-gray-100 text-gray-600'} disabled:opacity-70`}>
+                      {kind === 'medicine' ? '💊 복용약' : '🌿 건강식품'}
+                    </button>
+                  ))}
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-gray-500 block mb-1">이름</label>
+                  <input value={draft.name} maxLength={60} onChange={e => set({ name: e.target.value })} required
+                    placeholder={draft.kind === 'medicine' ? '예: 혈압약, 통풍약' : '예: 오메가3, 유산균, 발효효소'} className="w-full border p-3 rounded-xl bg-gray-50 outline-none text-sm" />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-gray-500 block mb-1">1회 양 (선택)</label>
+                  <input value={draft.dose} maxLength={40} onChange={e => set({ dose: e.target.value })} placeholder="예: 1알, 1포" className="w-full border p-3 rounded-xl bg-gray-50 outline-none text-sm" />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-gray-500 block mb-1">먹는 때 (여러 개 고를 수 있어요)</label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {INTAKE_SLOTS.map(s => (
+                      <button key={s.key} type="button" onClick={() => toggleTime(s.key)}
+                        className={`px-3 py-1.5 rounded-full text-xs font-bold ${draft.times.includes(s.key) ? 'bg-violet-600 text-white' : 'bg-gray-100 text-gray-600'}`}>{s.label}</button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-gray-500 block mb-1">복용 방법 메모 (선택)</label>
+                  <input value={draft.note} maxLength={100} onChange={e => set({ note: e.target.value })}
+                    placeholder={draft.kind === 'medicine' ? '처방대로 적어 두세요 (예: 아침 식후 1알)' : '예: 식후에'} className="w-full border p-3 rounded-xl bg-gray-50 outline-none text-sm" />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-xs font-bold text-gray-500 block mb-1">시작일</label>
+                    <input type="date" value={draft.start_date} onChange={e => set({ start_date: e.target.value || today })} className="w-full border p-2.5 rounded-xl bg-gray-50 outline-none text-sm" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-bold text-gray-500 block mb-1">종료일 (선택)</label>
+                    <input type="date" value={draft.end_date} min={draft.start_date} onChange={e => set({ end_date: e.target.value })} className="w-full border p-2.5 rounded-xl bg-gray-50 outline-none text-sm" />
+                  </div>
+                </div>
+                {draft.kind === 'supplement' ? (
+                  <div className="bg-violet-50 rounded-2xl p-3 space-y-1.5">
+                    <p className="text-xs text-violet-900 break-keep">저장하면 AI가 한 번만 참고 설명을 만들어요. 포장 사진을 올리면 포장에 적힌 기능성 문구도 읽어요.</p>
+                    <input type="file" accept="image/*" multiple onChange={e => addPhotos(e.target.files)} className="text-xs" aria-label="포장 사진" />
+                    {draft.photos.length > 0 && <p className="text-[11px] text-violet-700">포장 사진 {draft.photos.length}장</p>}
+                    {photoError && <p className="text-[11px] text-red-500">{photoError}</p>}
+                  </div>
+                ) : (
+                  <p className="text-xs text-gray-500 bg-gray-50 rounded-2xl p-3 break-keep">약은 AI 설명을 만들지 않고, AI 리포트에도 보내지 않아요. 체크 기록만 남아요.</p>
+                )}
+                <div className="grid grid-cols-2 gap-2">
+                  <button type="button" onClick={() => setDraft(null)} className="py-3 rounded-xl bg-gray-100 text-gray-600 text-sm font-bold">취소</button>
+                  <button type="submit" disabled={busy || !draft.name.trim()} className="py-3 rounded-xl bg-violet-600 text-white text-sm font-bold disabled:opacity-60">{busy ? '저장 중...' : '저장'}</button>
+                </div>
+              </form>
+            ) : (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-2">
+                  <button type="button" onClick={() => setDraft(emptyIntakeDraft(today, 'medicine'))} className="py-3 rounded-2xl bg-white border border-violet-200 text-violet-700 text-sm font-bold">+ 복용약 등록</button>
+                  <button type="button" onClick={() => setDraft(emptyIntakeDraft(today, 'supplement'))} className="py-3 rounded-2xl bg-white border border-violet-200 text-violet-700 text-sm font-bold">+ 건강식품 등록</button>
+                </div>
+                {['medicine', 'supplement'].map(kind => (
+                  <div key={kind} className="space-y-2">
+                    <p className="text-xs font-bold text-gray-500">{intakeKindLabel(kind)} {group(kind).length}개</p>
+                    {group(kind).length ? group(kind).map(renderItem) : <p className="text-xs text-gray-400">등록한 {intakeKindLabel(kind)}이 없어요.</p>}
+                  </div>
+                ))}
+                {stopped.length > 0 && (
+                  <div className="space-y-2">
+                    <button type="button" onClick={() => setShowStopped(!showStopped)} className="text-xs font-bold text-gray-400">그만 먹은 것 {stopped.length}개 {showStopped ? '▲' : '▼'}</button>
+                    {showStopped && stopped.map(renderItem)}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      );
     }
 
     // 오늘의 기록표는 AI가 만든 foodName 제목 대신 실제 음식 목록을 우선 표시한다.
@@ -702,7 +1172,7 @@
       if (check?.status === 'skipped') return 'skipped';
       if (check?.status === 'done') return 'done';
       if (routine.kind === 'count' && (check?.value || 0) >= routine.target) return 'done';
-      if (!check && routine.link_exercise && autoDone) return 'done';
+      if (!check && (routine.link_exercise || routine.link_intake) && autoDone) return 'done';
       if (routine.kind === 'count' && (check?.value || 0) > 0) return 'progress';
       return 'todo';
     }
@@ -814,6 +1284,57 @@
       })).filter(g => g.items.length);
     }
 
+    // ★ v0.4.3 홈 칩: 지금·이후·언제든 루틴과 지난 시간대(놓친) 루틴을 나눈다.
+    // 새벽 0~5시는 하루가 막 시작된 때라 놓친 것으로 보지 않는다. 지난 날짜는 모두 '지금' 목록.
+    function splitHomeRoutines(items, isToday, nowSlot, hour) {
+      if (!isToday || hour < 5) return { upcoming: items, missed: [] };
+      const nowIndex = routineSlotIndex(nowSlot);
+      const isMissed = (r) => { const s = r.time_slot || 'anytime'; return s !== 'anytime' && routineSlotIndex(s) < nowIndex; };
+      return { upcoming: items.filter(r => !isMissed(r)), missed: items.filter(isMissed) };
+    }
+
+    // "놓친 루틴 3개 · 아침 운동, 영양제" + " +1"
+    function homeMissedLabel(missed) {
+      const names = missed.slice(0, 2).map(r => r.name).join(', ');
+      return { text: `⏰ 놓친 루틴 ${missed.length}개 · ${names}`, more: missed.length > 2 ? `+${missed.length - 2}` : '' };
+    }
+
+    // 이번 누름으로 완료가 되는가(횟수 루틴은 목표를 채울 때만).
+    function routineTapCompletes(routine, check, state) {
+      if (state === 'done' || state === 'skipped') return false;
+      return routine.kind !== 'count' || ((check?.value || 0) + (routine.step || 1)) >= routine.target;
+    }
+
+    // ★ v0.4.3 홈 칩·루틴 탭 공통: 체크한 항목을 ✓·줄 긋기로 0.7초 보여 준 뒤 0.3초 동안 사라지게 한다.
+    // 저장은 누르는 즉시 하고, 이것은 화면 효과만 맡는다. 사라지는 중에 다시 누르면 효과를 멈추고 체크를 취소한다.
+    const ROUTINE_LEAVE_HOLD_MS = 700, ROUTINE_LEAVE_FADE_MS = 300;
+    function useRoutineLeaving(date) {
+      const [leaving, setLeaving] = useState({}); // routine id -> 'hold' | 'fade'
+      const timersRef = useRef({});
+      const cancel = (id) => {
+        (timersRef.current[id] || []).forEach(clearTimeout);
+        delete timersRef.current[id];
+        setLeaving(p => { if (!(id in p)) return p; const n = { ...p }; delete n[id]; return n; });
+      };
+      const start = (id) => {
+        cancel(id);
+        setLeaving(p => ({ ...p, [id]: 'hold' }));
+        timersRef.current[id] = [
+          setTimeout(() => setLeaving(p => (id in p ? { ...p, [id]: 'fade' } : p)), ROUTINE_LEAVE_HOLD_MS),
+          setTimeout(() => cancel(id), ROUTINE_LEAVE_HOLD_MS + ROUTINE_LEAVE_FADE_MS),
+        ];
+      };
+      useEffect(() => () => Object.values(timersRef.current).flat().forEach(clearTimeout), []);
+      useEffect(() => { Object.keys(timersRef.current).forEach(cancel); }, [date]);
+      // 체크 버튼 대신 부른다: 사라지는 중이면 취소, 이번 누름으로 완료되면 효과 시작.
+      const tap = (routine, check, state, onTap) => {
+        if (leaving[routine.id]) { cancel(routine.id); onTap(); return; }
+        if (routineTapCompletes(routine, check, state)) start(routine.id);
+        onTap();
+      };
+      return { leaving, tap };
+    }
+
     function RoutineCheckButton({ routine, state, value, onTap }) {
       const done = state === 'done', skipped = state === 'skipped';
       return (
@@ -825,14 +1346,15 @@
     }
 
     // 루틴 한 줄: 체크 버튼 + 이름 + 진행 + ⋯ 메뉴(건너뜀·직접 입력·메모·취소)
-    function RoutineRow({ routine, check, state, faded, onTap, onSkipToggle, onSetValue, onSaveNote, onClear }) {
+    function RoutineRow({ routine, check, state, faded, leaving, onTap, onSkipToggle, onSetValue, onSaveNote, onClear }) {
       const [menuOpen, setMenuOpen] = useState(false);
       const [noteDraft, setNoteDraft] = useState(check?.note || '');
       const [valueDraft, setValueDraft] = useState(String(check?.value || 0));
       useEffect(() => { setNoteDraft(check?.note || ''); setValueDraft(String(check?.value || 0)); }, [check?.note, check?.value]);
       const value = check?.value || 0;
       return (
-        <div className={`rounded-2xl ${faded && state !== 'done' ? 'opacity-60' : ''}`} data-routine-row>
+        <div className={`rt-row ${leaving === 'fade' ? 'rt-row-fade' : ''}`} data-routine-row data-leaving={leaving || undefined}><div className="rt-row-inner">
+        <div className={`rounded-2xl ${faded && state !== 'done' ? 'opacity-60' : ''}`}>
           <div className="flex items-center gap-3 py-1.5">
             <RoutineCheckButton routine={routine} state={state} value={value} onTap={onTap} />
             <div className="min-w-0 flex-1">
@@ -851,6 +1373,7 @@
               {routine.motto && state !== 'done' && <p className="text-[11px] text-gray-400 mt-0.5 break-keep">“{routine.motto}”</p>}
               {check?.note && <p className="text-[11px] text-indigo-500 mt-0.5 break-keep">📝 {check.note}</p>}
               {routine.link_exercise && state === 'done' && !check && <p className="text-[11px] text-emerald-600 mt-0.5">운동 기록으로 자동 완료</p>}
+              {routine.link_intake && state === 'done' && !check && <p className="text-[11px] text-violet-600 mt-0.5">복용 체크로 자동 완료</p>}
             </div>
             <button type="button" onClick={() => setMenuOpen(!menuOpen)} aria-label={`${routine.name} 더보기`} className="shrink-0 w-8 h-8 rounded-lg text-gray-400 hover:bg-gray-50 font-bold">⋯</button>
           </div>
@@ -880,6 +1403,7 @@
             </div>
           )}
         </div>
+        </div></div>
       );
     }
 
@@ -893,7 +1417,10 @@
       const stateOf = (r) => routineDayState(r, getCheck(r.id, date), isAutoDone(r, date));
       const doneCount = all.filter(r => stateOf(r) === 'done').length;
       const skippedCount = all.filter(r => stateOf(r) === 'skipped').length;
-      const finished = all.filter(r => ['done', 'skipped'].includes(stateOf(r)));
+      const { leaving, tap: leaveTap } = useRoutineLeaving(date); // ★ v0.4.3 체크 효과(홈 칩과 공통)
+      const tapRow = (r) => leaveTap(r, getCheck(r.id, date), stateOf(r), () => actions.tap(r, date));
+      // 마친 루틴은 하루 시간 순서(아침 → 자기 전 → 언제든). 사라지는 중인 것은 아직 위 목록에 있다.
+      const finished = all.filter(r => ['done', 'skipped'].includes(stateOf(r)) && !leaving[r.id]).sort(compareRoutines);
       return (
         <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100" data-today-routines>
           <div className="flex items-center justify-between gap-2 mb-2">
@@ -918,7 +1445,7 @@
                 <p className="text-sm font-bold text-emerald-700 bg-emerald-50 rounded-2xl p-3">🎉 {isToday ? '오늘' : '이 날'} 루틴을 모두 마쳤어요!</p>
               )}
               {groups.map(group => {
-                const open = group.items.filter(r => !['done', 'skipped'].includes(stateOf(r)));
+                const open = group.items.filter(r => !['done', 'skipped'].includes(stateOf(r)) || (leaving[r.id] && stateOf(r) === 'done'));
                 if (!open.length) return null;
                 return (
                   <div key={group.key}>
@@ -926,8 +1453,8 @@
                       {group.label}{group.now ? ' · 지금' : group.past ? ' · 지난 시간대' : ''}
                     </p>
                     {open.map(r => (
-                      <RoutineRow key={r.id} routine={r} check={getCheck(r.id, date)} state={stateOf(r)} faded={group.past}
-                        onTap={() => actions.tap(r, date)} onSkipToggle={() => actions.toggleSkip(r, date)}
+                      <RoutineRow key={r.id} routine={r} check={getCheck(r.id, date)} state={stateOf(r)} faded={group.past} leaving={leaving[r.id]}
+                        onTap={() => tapRow(r)} onSkipToggle={() => actions.toggleSkip(r, date)}
                         onSetValue={(v) => actions.setValue(r, date, v)} onSaveNote={(n) => actions.saveNote(r, date, n)} onClear={() => actions.clear(r, date)} />
                     ))}
                   </div>
@@ -953,13 +1480,27 @@
 
     // ★ 홈: 한두 줄짜리 루틴 요약. 지금 할 것 3개까지 칩으로 바로 체크하고, 나머지는 루틴 탭에서.
     function HomeRoutineStrip({ routines, date, isToday, getCheck, isAutoDone, onTap, onOpenRoutineTab }) {
+      const { leaving, tap: leaveTap } = useRoutineLeaving(date); // ★ v0.4.3 체크 효과(루틴 탭과 공통)
+
       const active = (routines || []).filter(r => !r.archived_at);
-      const all = buildTodayRoutineGroups(routines, date, isToday, currentRoutineSlot()).flatMap(g => g.items);
+      const nowSlot = currentRoutineSlot();
+      const all = buildTodayRoutineGroups(routines, date, isToday, nowSlot).flatMap(g => g.items);
       const stateOf = (r) => routineDayState(r, getCheck(r.id, date), isAutoDone(r, date));
       const counted = all.filter(r => stateOf(r) !== 'skipped');
       const done = counted.filter(r => stateOf(r) === 'done').length;
-      const open = all.filter(r => !['done', 'skipped'].includes(stateOf(r)));
-      const shown = open.slice(0, 3);
+      const isOpen = (r) => !['done', 'skipped'].includes(stateOf(r));
+      const open = all.filter(isOpen);
+      const visible = all.filter(r => isOpen(r) || (leaving[r.id] && stateOf(r) === 'done'));
+      const split = splitHomeRoutines(visible, isToday, nowSlot, new Date().getHours());
+      const missedMode = !split.upcoming.length && split.missed.length > 0;
+      const primary = missedMode ? split.missed : split.upcoming;
+      const shown = primary.slice(0, 3);
+      const restCount = primary.filter(r => !leaving[r.id]).length - shown.filter(r => !leaving[r.id]).length;
+      const missedOpen = missedMode ? [] : split.missed.filter(r => !leaving[r.id]);
+      const missedLabel = missedOpen.length ? homeMissedLabel(missedOpen) : null;
+
+      const tapChip = (r) => leaveTap(r, getCheck(r.id, date), stateOf(r), () => onTap(r, date));
+
       const box = 'bg-white rounded-3xl px-4 py-3 shadow-sm border border-gray-100';
       if (!active.length) {
         return (
@@ -969,7 +1510,7 @@
           </button>
         );
       }
-      if (!all.length || !open.length) {
+      if (!all.length || !visible.length) {
         return (
           <button type="button" onClick={onOpenRoutineTab} className={`${box} w-full text-left text-sm font-bold text-gray-700`} data-home-routines>
             {!all.length ? '🌱 이 날은 할 루틴이 없어요 🌿' : <>🌱 {isToday ? '오늘' : '이 날'} 루틴 완료 🎉 <span className="text-emerald-600">{done}/{counted.length}</span></>} <span className="text-emerald-600">→</span>
@@ -981,26 +1522,37 @@
           <div className="flex items-center gap-2">
             <span className="text-sm font-bold text-gray-800 whitespace-nowrap">🌱 루틴 <span className="text-emerald-600">{done}/{counted.length}</span></span>
             <div className="h-1.5 flex-1 bg-gray-100 rounded-full overflow-hidden">
-              <div className="h-full bg-emerald-400" style={{ width: `${counted.length ? done / counted.length * 100 : 0}%` }}></div>
+              <div className="rt-progress h-full bg-emerald-400 transition-all duration-500" style={{ width: `${counted.length ? done / counted.length * 100 : 0}%` }}></div>
             </div>
             <button type="button" onClick={onOpenRoutineTab} aria-label="루틴 탭으로" className="text-xs font-bold text-emerald-600 whitespace-nowrap">전체 →</button>
           </div>
-          <div className="flex flex-wrap gap-1.5 mt-2">
+          {missedMode && <p className="text-[11px] font-bold text-amber-600 mt-1.5" data-home-missed-mode>⏰ 놓친 루틴 마저 하기 {primary.filter(r => !leaving[r.id]).length}개</p>}
+          <div className={`flex flex-wrap gap-1.5 ${missedMode ? 'mt-1' : 'mt-2'}`}>
             {shown.map(r => {
               const check = getCheck(r.id, date);
+              const phase = leaving[r.id];
               return (
-                <button key={r.id} type="button" onClick={() => onTap(r, date)} aria-label={`${r.name} 체크`}
-                  className="max-w-full flex items-center gap-1 text-xs font-bold px-2.5 py-1.5 rounded-full border border-emerald-200 bg-emerald-50 text-emerald-800 active:scale-95" data-home-routine-chip>
-                  <span className="w-3.5 h-3.5 rounded-full border-2 border-emerald-400 bg-white shrink-0"></span>
-                  <span className="truncate">{r.emoji} {r.name}</span>
+                <button key={r.id} type="button" onClick={() => tapChip(r)} aria-label={phase ? `${r.name} 체크 취소` : `${r.name} 체크`}
+                  className={`rt-chip max-w-full overflow-hidden whitespace-nowrap flex items-center gap-1 text-xs font-bold px-2.5 py-1.5 rounded-full border active:scale-95 ${phase ? 'border-emerald-200 bg-emerald-100/60 text-emerald-600/70' : 'border-emerald-200 bg-emerald-50 text-emerald-800'} ${phase === 'fade' ? 'rt-chip-fade' : ''}`}
+                  data-home-routine-chip data-leaving={phase || undefined}>
+                  {phase
+                    ? <span className="w-3.5 h-3.5 rounded-full bg-emerald-500 text-white text-[9px] leading-none flex items-center justify-center shrink-0">✓</span>
+                    : <span className="w-3.5 h-3.5 rounded-full border-2 border-emerald-400 bg-white shrink-0"></span>}
+                  <span className={`truncate ${phase ? 'rt-strike' : ''}`}>{r.emoji} {r.name}</span>
                   {r.kind === 'count' && <span className="font-normal text-emerald-600 whitespace-nowrap">{check?.value || 0}/{r.target}</span>}
                 </button>
               );
             })}
-            {open.length > shown.length && (
-              <button type="button" onClick={onOpenRoutineTab} className="text-xs font-bold px-2.5 py-1.5 rounded-full bg-gray-100 text-gray-500">+{open.length - shown.length}</button>
+            {restCount > 0 && (
+              <button type="button" onClick={onOpenRoutineTab} className="text-xs font-bold px-2.5 py-1.5 rounded-full bg-gray-100 text-gray-500">+{restCount}</button>
             )}
           </div>
+          {missedLabel && (
+            <button type="button" onClick={onOpenRoutineTab} className="w-full flex items-center gap-1 mt-1.5 text-[11px] text-gray-400 text-left" data-home-missed>
+              <span className="truncate min-w-0">{missedLabel.text}</span>
+              <span className="shrink-0 whitespace-nowrap">{missedLabel.more ? `${missedLabel.more} ` : ''}→</span>
+            </button>
+          )}
         </div>
       );
     }
@@ -1008,7 +1560,7 @@
     const ROUTINE_EMOJIS = ['✅', '🧘', '📚', '💪', '🏃', '💧', '💊', '📝', '🙏', '🎯', '🛏️', '🧹', '🌱', '🎸'];
 
     function emptyRoutineDraft(today) {
-      return { name: '', emoji: '✅', kind: 'check', target: 1, step: 1, unit: '', schedule_type: 'daily', weekdays: [], month_days: [], interval_days: 2, start_date: today, time_slot: 'anytime', time_of_day: '', motto: '', link_exercise: false };
+      return { name: '', emoji: '✅', kind: 'check', target: 1, step: 1, unit: '', schedule_type: 'daily', weekdays: [], month_days: [], interval_days: 2, start_date: today, time_slot: 'anytime', time_of_day: '', motto: '', link_exercise: false, link_intake: false };
     }
 
     // 루틴 추가·수정 창
@@ -1042,7 +1594,7 @@
           month_days: d.schedule_type === 'monthly' ? [...d.month_days].sort((a, b) => a - b) : [],
           interval_days: d.schedule_type === 'interval' ? interval : null,
           start_date: d.start_date, time_slot: d.time_slot, time_of_day: d.time_of_day || null,
-          motto: d.motto.trim().slice(0, 100), link_exercise: !!d.link_exercise,
+          motto: d.motto.trim().slice(0, 100), link_exercise: !!d.link_exercise, link_intake: !!d.link_intake,
         });
         setSaving(false);
         if (ok === false) setError('저장하지 못했어요. 잠시 후 다시 시도해 주세요.');
@@ -1120,6 +1672,10 @@
             <label className="flex items-center gap-2 text-sm text-gray-600">
               <input type="checkbox" checked={d.link_exercise} onChange={e => set({ link_exercise: e.target.checked })} />
               운동을 기록하면 자동으로 완료 (기록 시각이 이 루틴 시간대일 때, 언제든이면 그날 아무 때나)
+            </label>
+            <label className="flex items-center gap-2 text-sm text-gray-600" data-routine-link-intake>
+              <input type="checkbox" checked={!!d.link_intake} onChange={e => set({ link_intake: e.target.checked })} />
+              💊 복용 체크를 다 하면 자동으로 완료 (이 루틴 시간대에 등록한 약·건강식품, 등록이 없으면 건강식품 기록)
             </label>
             {error && <p className="text-sm text-red-500">{error}</p>}
             <div className="flex gap-2">
@@ -1483,7 +2039,8 @@
               goalExerciseWeekly: data.goal_exercise_weekly, goalAlcoholFreeWeekly: data.goal_alcohol_free_weekly,
               goalWeightKg: data.goal_weight_kg, goalBpSysMax: data.goal_bp_sys_max, goalBpDiaMax: data.goal_bp_dia_max,
               goalSugarMax: data.goal_sugar_max,
-              showRoutines: data.show_routines !== false
+              showRoutines: data.show_routines !== false,
+              intakePharmacistAck: !!data.intake_pharmacist_ack
             });
           }
         });
@@ -1498,7 +2055,7 @@
         if (error || !data) return;
         const counts = {};
         data.forEach(row => {
-          if (row.category === '운동' || row.category === '생체기록') return;
+          if (row.category === '운동' || row.category === '생체기록' || row.category === SUPPLEMENT_CATEGORY) return;
           (row.ingredients || []).forEach(item => {
             const raw = String(item || '');
             const name = (raw.includes('(') ? raw.slice(0, raw.indexOf('(')) : raw).trim();
@@ -1852,11 +2409,146 @@
         }
       };
 
+      // ★ v0.4.4 복용 관리. 체크는 "항목id|날짜|시간대" 키로 보관한다(보고 있는 날짜만 불러옴).
+      const [intakeItems, setIntakeItems] = useState([]);
+      const [intakeChecks, setIntakeChecks] = useState({});
+      const [isIntakeSheetOpen, setIsIntakeSheetOpen] = useState(false);
+      const [intakeManager, setIntakeManager] = useState(null); // { draft } 열려 있으면 객체
+      const [intakeSaving, setIntakeSaving] = useState(false);
+      const INTAKE_SAVE_FAILED = '복용 정보를 저장하지 못했어요. 잠시 후 다시 시도해 주세요.';
+
+      useEffect(() => {
+        if (!session) { setIntakeItems([]); return; }
+        withAuthRetry(() => sb.from('intake_items').select('*').order('sort_order', { ascending: true }).order('created_at', { ascending: true }))
+          .then(({ data, error }) => { if (!error && data) setIntakeItems(data); });
+      }, [session]);
+      // 복용 체크는 최근 1년 치를 한 번에 불러온다(복용률·루틴 연결). 그보다 앞 날짜를 보면 그 날만 더 불러온다.
+      const intakeSinceStr = (() => { const d = parseDate(formatDate(new Date())); d.setDate(d.getDate() - ROUTINE_LOOKBACK_DAYS); return formatDate(d); })();
+      const mergeIntakeChecks = (rows) => setIntakeChecks(p => ({ ...p, ...Object.fromEntries(rows.map(c => [intakeCheckKey(c.item_id, c.check_date, c.slot), c])) }));
+      useEffect(() => {
+        if (!session) { setIntakeChecks({}); return; }
+        (async () => {
+          const rows = [];
+          for (let from = 0; from < 20000; from += 1000) {
+            const { data, error } = await withAuthRetry(() => sb.from('intake_checks').select('*').gte('check_date', intakeSinceStr)
+              .order('check_date', { ascending: true }).range(from, from + 999));
+            if (error) return;
+            rows.push(...(data || []));
+            if (!data || data.length < 1000) break;
+          }
+          mergeIntakeChecks(rows);
+        })();
+      }, [session]);
+      useEffect(() => {
+        if (!session || !currentDate || currentDate >= intakeSinceStr) return;
+        withAuthRetry(() => sb.from('intake_checks').select('*').eq('check_date', currentDate))
+          .then(({ data, error }) => { if (!error && data) mergeIntakeChecks(data); });
+      }, [session, currentDate]);
+      const intakeAdherenceNow = intakeAdherence(intakeItems, intakeChecks, formatDate(new Date()), 30);
+
+      const intakeDayChecks = Object.values(intakeChecks).filter(c => c.check_date === currentDate);
+      const intakeSupplementDayLogs = intakeSupplementLogs(intakeItems, intakeChecks, currentDate);
+      const showIntakeAck = !profile?.intakePharmacistAck
+        && intakeItems.some(i => i.kind === 'medicine' && isIntakeDue(i, currentDate))
+        && intakeItems.some(i => i.kind === 'supplement' && isIntakeDue(i, currentDate));
+
+      // time: 복용 창 위 "먹은 시각" 칸 값. 비었거나 덜 입력됐으면 오늘은 지금 시각, 지난 날짜는 시간대 기본 시각.
+      const toggleIntakeCheck = async (item, slot, time) => {
+        const key = intakeCheckKey(item.id, currentDate, slot);
+        const prev = intakeChecks[key] || null;
+        if (prev) {
+          setIntakeChecks(p => { const n = { ...p }; delete n[key]; return n; });
+          const { error } = await sb.from('intake_checks').delete().eq('item_id', item.id).eq('check_date', currentDate).eq('slot', slot);
+          if (error) { setIntakeChecks(p => ({ ...p, [key]: prev })); showNotice(INTAKE_SAVE_FAILED); }
+          return;
+        }
+        const isToday = currentDate === formatDate(new Date());
+        const row = { user_id: session.user.id, item_id: item.id, check_date: currentDate, slot,
+          taken_time: /^\d{2}:\d{2}$/.test(time || '') ? time
+            : (isToday ? getCurrentTimeStr() : (INTAKE_SLOTS.find(x => x.key === slot)?.time || '08:00')) };
+        setIntakeChecks(p => ({ ...p, [key]: row }));
+        const { data, error } = await sb.from('intake_checks').upsert(row, { onConflict: 'item_id,check_date,slot' }).select().single();
+        if (error) { setIntakeChecks(p => { const n = { ...p }; delete n[key]; return n; }); showNotice(INTAKE_SAVE_FAILED); return; }
+        setIntakeChecks(p => ({ ...p, [key]: data }));
+      };
+
+      // 등록·수정. 건강식품은 AI 참고가 없을 때(또는 새 포장 사진이 있을 때) 한 번만 서버에서 만든다. 약은 AI를 쓰지 않는다.
+      const saveIntakeItem = async (draft, done) => {
+        setIntakeSaving(true);
+        try {
+          const fields = {
+            kind: draft.kind, name: draft.name.trim().slice(0, 60), dose: (draft.dose || '').trim().slice(0, 40),
+            times: draft.times, note: (draft.note || '').trim().slice(0, 100),
+            start_date: draft.start_date || currentDate, end_date: draft.end_date || null, updated_at: new Date().toISOString(),
+          };
+          if (draft.kind === 'supplement') {
+            fields.label_claim = draft.label_claim || '';
+            fields.ai_note = draft.ai_note || '';
+          }
+          const existing = draft.id ? intakeItems.find(i => i.id === draft.id) : null;
+          // 이름이 바뀌면 전의 AI 참고는 맞지 않으므로 지운다.
+          if (existing && existing.kind === 'supplement' && existing.name !== fields.name) { fields.label_claim = ''; fields.ai_note = ''; }
+          const query = draft.id
+            ? sb.from('intake_items').update(fields).eq('id', draft.id).select().single()
+            : sb.from('intake_items').insert({ ...fields, user_id: session.user.id, sort_order: intakeItems.length }).select().single();
+          const { data, error } = await query;
+          if (error) throw error;
+          setIntakeItems(p => draft.id ? p.map(i => i.id === data.id ? data : i) : [...p, data]);
+          done && done();
+          if (data.kind === 'supplement' && (!data.ai_note || (draft.photos || []).length)) {
+            try {
+              const info = await callAI('intakeInfo', { itemId: data.id, base64Images: draft.photos || [] });
+              setIntakeItems(p => p.map(i => i.id === data.id ? { ...i, label_claim: info.labelClaim || '', ai_note: info.aiNote || '' } : i));
+            } catch (err) {
+              showNotice('등록은 됐어요. AI 참고 설명은 지금 만들지 못했어요.');
+            }
+          } else {
+            showNotice('저장했어요.');
+          }
+        } catch (err) {
+          console.error(err);
+          showNotice(INTAKE_SAVE_FAILED);
+        } finally {
+          setIntakeSaving(false);
+        }
+      };
+      const updateIntakeItem = async (item, fields) => {
+        const prev = intakeItems;
+        setIntakeItems(p => p.map(i => i.id === item.id ? { ...i, ...fields } : i));
+        const { error } = await sb.from('intake_items').update({ ...fields, updated_at: new Date().toISOString() }).eq('id', item.id);
+        if (error) { setIntakeItems(prev); showNotice(INTAKE_SAVE_FAILED); }
+      };
+      const stopIntakeItem = (item) => updateIntakeItem(item, { stopped_at: new Date().toISOString() });
+      const resumeIntakeItem = (item) => updateIntakeItem(item, { stopped_at: null, ...(item.end_date && item.end_date < formatDate(new Date()) ? { end_date: null } : {}) });
+      const deleteIntakeItem = async (item) => {
+        const prev = intakeItems;
+        setIntakeItems(p => p.filter(i => i.id !== item.id));
+        const { error } = await sb.from('intake_items').delete().eq('id', item.id);
+        if (error) { setIntakeItems(prev); showNotice(INTAKE_SAVE_FAILED); return; }
+        setIntakeChecks(p => Object.fromEntries(Object.entries(p).filter(([, c]) => c.item_id !== item.id)));
+      };
+      const ackIntakePharmacist = async () => {
+        setProfile(p => ({ ...p, intakePharmacistAck: true }));
+        const { error } = await sb.from('profiles').update({ intake_pharmacist_ack: true }).eq('id', session.user.id);
+        if (error) { setProfile(p => ({ ...p, intakePharmacistAck: false })); showNotice(INTAKE_SAVE_FAILED); }
+      };
+      // 사진·글로 기록한 건강식품을 복용 관리에 등록(이미 만든 포장 문구·AI 참고를 그대로 옮겨 AI를 다시 부르지 않는다).
+      const openIntakeFromLog = (log) => {
+        const first = String((Array.isArray(log.ingredients) && log.ingredients[0]) || log.foodName || '');
+        const name = (first.includes('(') ? first.slice(0, first.indexOf('(')) : first).trim().slice(0, 60);
+        const dose = first.includes('(') ? first.slice(first.indexOf('(') + 1).replace(/\)\s*$/, '').trim().slice(0, 40) : '';
+        const slot = INTAKE_SLOTS.reduce((best, x) => (log.time >= x.time ? x.key : best), 'morning');
+        setFeedbackPopupLog(null);
+        setIntakeManager({ draft: { ...emptyIntakeDraft(currentDate), name, dose, times: [slot],
+          label_claim: log.supplementInfo?.labelClaim || '', ai_note: log.supplementInfo?.aiNote || '' } });
+      };
+
       // ★ 짧게 떴다 사라지는 성공 안내 배너
       // ★ v0.4.0 루틴. 체크는 "루틴id|날짜" 키로 보관한다.
       const [routines, setRoutines] = useState([]);
       const [routineChecks, setRoutineChecks] = useState({});
       const [routineExerciseTimes, setRoutineExerciseTimes] = useState({}); // 날짜 → 운동 기록 시각 목록
+      const [routineSupplementDates, setRoutineSupplementDates] = useState({}); // 날짜 → 사진·글 건강식품 기록이 있음
       const [routinesLoading, setRoutinesLoading] = useState(false);
       const routineKey = (routineId, date) => `${routineId}|${date}`;
       const getRoutineCheck = (routineId, date) => routineChecks[routineKey(routineId, date)] || null;
@@ -1865,6 +2557,10 @@
         ? logs.filter(l => l.category === '운동').map(l => l.time)
         : (routineExerciseTimes[date] || []);
       const isRoutineAutoDone = (routine, date) => {
+        if (routine?.link_intake) {
+          const hasSupplementLog = date === currentDate ? logs.some(isSupplementLog) : Boolean(routineSupplementDates[date]);
+          if (intakeRoutineAutoDone(routine, date, intakeItems, intakeChecks, hasSupplementLog)) return true;
+        }
         if (!routine?.link_exercise) return false;
         const linked = routines.filter(r => r.link_exercise && isRoutineDue(r, date)).sort(compareRoutines);
         return matchExerciseToRoutines(linked, exerciseTimesOn(date)).has(routine.id);
@@ -1887,11 +2583,13 @@
           return rows;
         };
         try {
-          const [routineRows, checkRows, exerciseRows] = await Promise.all([
+          const [routineRows, checkRows, exerciseRows, supplementRows] = await Promise.all([
             pageAll((a, b) => sb.from('routines').select('*').order('sort_order', { ascending: true }).order('created_at', { ascending: true }).range(a, b)),
             pageAll((a, b) => sb.from('routine_checks').select('*').gte('check_date', sinceStr).order('check_date', { ascending: true }).range(a, b)),
             pageAll((a, b) => sb.from('logs').select('log_date, log_time').eq('category', '운동').gte('log_date', sinceStr).order('log_date', { ascending: true }).range(a, b)),
+            pageAll((a, b) => sb.from('logs').select('log_date').eq('category', SUPPLEMENT_CATEGORY).gte('log_date', sinceStr).order('log_date', { ascending: true }).range(a, b)),
           ]);
+          setRoutineSupplementDates(Object.fromEntries(supplementRows.map(r => [r.log_date, true])));
           setRoutines(routineRows);
           setRoutineChecks(Object.fromEntries(checkRows.map(c => [routineKey(c.routine_id, c.check_date), c])));
           const times = {};
@@ -2126,7 +2824,8 @@
               goalExerciseWeekly: freshProfile.goal_exercise_weekly, goalAlcoholFreeWeekly: freshProfile.goal_alcohol_free_weekly,
               goalWeightKg: freshProfile.goal_weight_kg, goalBpSysMax: freshProfile.goal_bp_sys_max, goalBpDiaMax: freshProfile.goal_bp_dia_max,
               goalSugarMax: freshProfile.goal_sugar_max,
-              showRoutines: freshProfile.show_routines !== false
+              showRoutines: freshProfile.show_routines !== false,
+              intakePharmacistAck: !!freshProfile.intake_pharmacist_ack
             });
           }
           setIsSettingsOpen(false);
@@ -2645,18 +3344,32 @@
         }, 90000);
 
         let summaryData = "";
+        // ★ v0.4.5 등록한 건강식품의 복용 체크(약은 보내지 않는다).
+        const periodSupplementChecks = Object.values(intakeChecks)
+          .filter(c => c.check_date >= activeRange.start && c.check_date <= activeRange.end)
+          .map(c => ({ c, item: intakeItems.find(i => i.id === c.item_id) }))
+          .filter(x => x.item?.kind === 'supplement')
+          .sort((a, b) => (a.c.check_date + String(a.c.taken_time)).localeCompare(b.c.check_date + String(b.c.taken_time)));
+        const supplementNote = periodSupplementChecks.length || periodLogs.some(isSupplementLog)
+          ? '\n* 건강식품은 식사가 아니므로 식사·간식으로 세지 말고, 효능을 평가하거나 평가의 근거로 삼지 마세요.' : '';
         if (statsMode === 'month') {
            const avgBio = averageBiometrics(periodLogs.filter(l => l.category === '생체기록'));
-           const foods = periodLogs.filter(l => l.category !== '생체기록' && l.category !== '운동').map(l => l.foodName).join(', ');
+           const checkCounts = {};
+           periodSupplementChecks.forEach(({ item }) => { checkCounts[item.name] = (checkCounts[item.name] || 0) + 1; });
+           const checkSummary = Object.entries(checkCounts).map(([name, n]) => `${name} ${n}회`).join(', ');
+           const foods = periodLogs.filter(l => l.category !== '생체기록' && l.category !== '운동' && !isSupplementLog(l)).map(l => l.foodName).join(', ');
+           const supplements = periodLogs.filter(isSupplementLog).map(l => getRecordedFoodNames(l).join('+')).join(', ');
            const exercises = periodLogs.filter(l => l.category === '운동').map(l => l.foodName).join(', ');
 
-           summaryData = `[${activeRange.label} 패턴 압축 데이터]\n- 해당 기간 주요 식단: ${foods || '없음'}\n- 해당 기간 주요 운동: ${exercises || '없음'}\n- 평균 혈압: ${avgBio.bpSys ?? '기록없음'} / ${avgBio.bpDia ?? '기록없음'}\n- 평균 혈당: ${avgBio.sugar ?? '기록없음'}\n- 평균 체중: ${avgBio.weight !== null ? avgBio.weight.toFixed(1) + 'kg' : '기록없음'}\n- 평균 수면 시간: ${avgBio.sleep !== null ? avgBio.sleep.toFixed(1) + '시간' : '기록없음'}\n위 압축 데이터를 바탕으로 전반적인 생활 패턴의 장점과 개선점을 의학/영양학적으로 코칭해주세요.`;
+           summaryData = `[${activeRange.label} 패턴 압축 데이터]\n- 해당 기간 주요 식단: ${foods || '없음'}\n- 해당 기간 주요 운동: ${exercises || '없음'}\n- 해당 기간 건강식품(식사 아님): ${supplements || '없음'}\n- 등록한 건강식품 복용 체크: ${checkSummary || '없음'}\n- 평균 혈압: ${avgBio.bpSys ?? '기록없음'} / ${avgBio.bpDia ?? '기록없음'}\n- 평균 혈당: ${avgBio.sugar ?? '기록없음'}\n- 평균 체중: ${avgBio.weight !== null ? avgBio.weight.toFixed(1) + 'kg' : '기록없음'}\n- 평균 수면 시간: ${avgBio.sleep !== null ? avgBio.sleep.toFixed(1) + '시간' : '기록없음'}\n위 압축 데이터를 바탕으로 전반적인 생활 패턴의 장점과 개선점을 의학/영양학적으로 코칭해주세요.` + supplementNote;
         } else {
            let summaryLines = periodLogs.map(l => {
              if (l.category === '생체기록') return `[${l.date} ${l.time}] 생체: ${Array.isArray(l.ingredients) ? l.ingredients.join(', ') : l.ingredients}`;
              return `[${l.date} ${l.time}] [${l.category}] ${l.foodName}: ${Array.isArray(l.ingredients) ? l.ingredients.join(', ') : l.ingredients}`;
            });
-           summaryData = `[${activeRange.label} 전체 내역 (시간순)]\n` + summaryLines.join('\n');
+           periodSupplementChecks.forEach(({ c, item }) => summaryLines.push(`[${c.check_date} ${String(c.taken_time || '').slice(0, 5)}] [건강식품] ${item.name}${item.dose ? ' ' + item.dose : ''} (등록한 건강식품 복용 체크)`));
+           summaryLines.sort();
+           summaryData = `[${activeRange.label} 전체 내역 (시간순)]\n` + summaryLines.join('\n') + supplementNote;
         }
 
         (async () => {
@@ -2714,6 +3427,10 @@
         let summaryLines = logs.map(l => {
           if (l.category === '생체기록') return `[${l.time}] 생체: ${Array.isArray(l.ingredients) ? l.ingredients.join(', ') : l.ingredients}`;
           return `[${l.time}] [${l.category}] ${l.foodName}: ${Array.isArray(l.ingredients) ? l.ingredients.join(', ') : l.ingredients}`;
+        });
+        intakeDayChecks.forEach(c => {
+          const item = intakeItems.find(i => i.id === c.item_id);
+          if (item?.kind === 'supplement') summaryLines.push(`[${String(c.taken_time || '').slice(0, 5)}] [건강식품] ${item.name}${item.dose ? ' ' + item.dose : ''} (등록한 건강식품 복용 체크)`);
         });
         const summaryData = `기록 내역 (시간순):\n` + summaryLines.join('\n');
 
@@ -3241,6 +3958,13 @@
                 </select>
                 <p className="text-xs text-gray-400 mt-1">기분에 따라 나를 대하는 AI의 피드백 톤을 조절해보세요.</p>
               </div>
+              <button type="button" onClick={() => setIntakeManager({ draft: null })} className="col-span-2 flex items-center justify-between bg-violet-50 rounded-xl p-3 text-left" data-setting-intake>
+                <span>
+                  <span className="block text-sm font-bold text-gray-700">💊 복용 관리</span>
+                  <span className="block text-xs text-gray-500 mt-0.5">오래 먹는 약·건강식품을 등록하고 매일 체크해요.</span>
+                </span>
+                <span className="text-violet-600 font-bold">→</span>
+              </button>
               <div className="col-span-2 bg-emerald-50 rounded-xl p-3" data-setting-routines>
                 <label className="flex items-center justify-between gap-3">
                   <span className="text-sm font-bold text-gray-700">🌱 루틴 기능 사용</span>
@@ -3396,7 +4120,17 @@
         const extraRows = logs
           .filter(log => !mealSlotByCategory[log.category])
           .map(log => ({ id: `log-${log.id}`, kind: 'extra', time: log.time, log }));
-        return [...mealRows, ...extraRows].sort((a, b) => a.time.localeCompare(b.time) || a.id.localeCompare(b.id));
+        // 복용 체크는 한 줄로 모은다(가장 이른 체크 시각, 약 먼저).
+        const intakeRow = intakeDayChecks.length ? (() => {
+          const names = [];
+          intakeDueRows(intakeItems, currentDate).forEach(({ item, slot }) => {
+            if (intakeChecks[intakeCheckKey(item.id, currentDate, slot)] && !names.includes(item.name)) names.push(item.name);
+          });
+          const time = intakeDayChecks.map(c => String(c.taken_time || '').slice(0, 5)).filter(Boolean).sort()[0] || '08:00';
+          const due = intakeDueRows(intakeItems, currentDate).length;
+          return { id: 'intake', kind: 'intake', time, names, done: intakeDayChecks.length, due };
+        })() : null;
+        return [...mealRows, ...extraRows, ...(intakeRow ? [intakeRow] : [])].sort((a, b) => a.time.localeCompare(b.time) || a.id.localeCompare(b.id));
       })();
       const displayedPeriodGoalDefaults = periodGoal?.status === 'active' ? periodGoal : periodGoalDefaults();
 
@@ -3535,11 +4269,14 @@
                     onOpenRoutineTab={() => { setActiveTab('routine'); window.scrollTo(0, 0); }} />
                 )}
 
+                <HomeIntakeStrip items={intakeItems} checks={intakeChecks} date={currentDate} isToday={currentDate === formatDate(new Date())}
+                  onOpen={() => setIsIntakeSheetOpen(true)} />
+
                 <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100" data-today-records>
-                  <div className="flex items-start justify-between gap-2 mb-4">
+                  <div className="flex flex-wrap items-start justify-between gap-x-2 gap-y-2.5 mb-4">
                     <div className="min-w-0">
-                      <h2 className="font-bold text-gray-800">🗓️ 오늘의 기록표</h2>
-                      <p className="text-xs text-gray-400 mt-0.5">안 먹음과 미기록을 구분해요</p>
+                      <h2 className="font-bold text-gray-800 whitespace-nowrap">🗓️ 오늘의 기록표</h2>
+                      <p className="text-xs text-gray-400 mt-0.5 whitespace-nowrap">안 먹음과 미기록을 구분해요</p>
                     </div>
                     <div className="shrink-0 flex items-center gap-1.5" data-today-quick-actions>
                       <button type="button" onClick={() => openQuickDraft('간식')}
@@ -3548,17 +4285,36 @@
                       <button type="button" onClick={() => openQuickDraft('운동')}
                         className="whitespace-nowrap text-[11px] font-bold px-2.5 py-2 rounded-xl bg-green-50 text-green-700 border border-green-100 active:scale-95 transition"
                         aria-label="운동 기록하기">🏃 운동</button>
+                      <button type="button" onClick={() => setIsIntakeSheetOpen(true)}
+                        className="whitespace-nowrap text-[11px] font-bold px-2.5 py-2 rounded-xl bg-violet-50 text-violet-700 border border-violet-100 active:scale-95 transition"
+                        aria-label="복용 체크하기">💊 복용</button>
                     </div>
                   </div>
                   {isFetching && <p className="text-[11px] text-blue-500 font-bold animate-pulse mb-2">기록을 불러오는 중입니다.</p>}
                   <div className="space-y-2.5">
                     {todayRecordRows.map(row => {
+                      if (row.kind === 'intake') {
+                        return (
+                          <button key={row.id} type="button" onClick={() => setIsIntakeSheetOpen(true)} className="w-full text-left flex items-center gap-3 rounded-2xl px-3 py-2.5 bg-violet-50" data-intake-record-row>
+                            <span className="text-lg shrink-0">💊</span>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="text-sm font-bold text-gray-700 whitespace-nowrap">복용</span>
+                                <span className="text-xs text-gray-400 whitespace-nowrap">{row.time}</span>
+                                <span className="text-[11px] font-bold text-violet-600 whitespace-nowrap">{Math.min(row.done, row.due || row.done)}/{row.due || row.done}</span>
+                              </div>
+                              <p className="text-xs text-gray-500 truncate">{row.names.join(' · ')}</p>
+                            </div>
+                          </button>
+                        );
+                      }
                       if (row.kind === 'extra') {
                         const isExercise = row.log.category === '운동';
                         const isBio = row.log.category === '생체기록';
+                        const isSupp = isSupplementLog(row.log);
                         return (
-                          <div key={row.id} className={`flex items-center gap-3 rounded-2xl px-3 py-2.5 ${isExercise ? 'bg-green-50' : (isBio ? 'bg-red-50' : 'bg-amber-50')}`}>
-                            <span className="text-lg shrink-0">{isExercise ? '🏃‍♂️' : (isBio ? '🩺' : (row.log.category === '야식' ? '🌃' : '🍪'))}</span>
+                          <div key={row.id} className={`flex items-center gap-3 rounded-2xl px-3 py-2.5 ${isExercise ? 'bg-green-50' : (isBio ? 'bg-red-50' : (isSupp ? 'bg-violet-50' : 'bg-amber-50'))}`}>
+                            <span className="text-lg shrink-0">{isExercise ? '🏃‍♂️' : (isBio ? '🩺' : (isSupp ? '💊' : (row.log.category === '야식' ? '🌃' : '🍪')))}</span>
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-2 min-w-0">
                                 <span className="text-sm font-bold text-gray-700 whitespace-nowrap">{row.log.category}</span>
@@ -3633,17 +4389,18 @@
                 {logs.map(log => {
                   const isEx = log.category === '운동';
                   const isBio = log.category === '생체기록';
+                  const isSupp = isSupplementLog(log);
                   const images = log.imageUrl ? log.imageUrl.split(',') : [];
 
                   return (
                     <div key={log.id} className="bg-white p-5 rounded-3xl shadow-sm border border-gray-100 flex gap-4 relative">
-                      <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-2xl shrink-0 ${isEx ? 'bg-green-50' : (isBio ? 'bg-red-50' : (log.isAlcohol ? 'bg-orange-100' : 'bg-orange-50'))}`}>
-                        {isEx ? '🏃‍♂️' : (isBio ? '🩺' : (log.isAlcohol ? '🍺' : '🍽️'))}
+                      <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-2xl shrink-0 ${isEx ? 'bg-green-50' : (isBio ? 'bg-red-50' : (isSupp ? 'bg-violet-50' : (log.isAlcohol ? 'bg-orange-100' : 'bg-orange-50')))}`}>
+                        {isEx ? '🏃‍♂️' : (isBio ? '🩺' : (isSupp ? '💊' : (log.isAlcohol ? '🍺' : '🍽️')))}
                       </div>
 
                       <div className="flex-1 min-w-0 flex flex-col justify-start">
                         <div className="flex justify-between items-start mb-1">
-                          <span className={`text-xs font-bold px-2 py-1 rounded-md flex items-center gap-1 ${isEx ? 'bg-green-100 text-green-700' : (isBio ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600')}`}>
+                          <span className={`text-xs font-bold px-2 py-1 rounded-md flex items-center gap-1 ${isEx ? 'bg-green-100 text-green-700' : (isBio ? 'bg-red-100 text-red-700' : (isSupp ? 'bg-violet-100 text-violet-700' : 'bg-gray-100 text-gray-600'))}`}>
                             {log.category} • {getRecordTimeLabel(log.category)} {log.time} {log.isAlcohol && <span className="text-[10px]">🍺</span>}
                           </span>
 
@@ -3695,6 +4452,7 @@
                           {log.analysis}
                         </p>
 
+                        <SupplementInfoBox log={log} dayLogs={[...logs, ...intakeSupplementDayLogs]} />
                         {renderPortionCheck(log)}
 
                         {log.followupAnswer ? (
@@ -4576,6 +5334,19 @@
             </div>
           )}
 
+          {isIntakeSheetOpen && (
+            <IntakeSheet items={intakeItems} checks={intakeChecks} date={currentDate} isToday={currentDate === formatDate(new Date())}
+              dayLogs={logs} adherence={intakeAdherenceNow} showAck={showIntakeAck} onAck={ackIntakePharmacist} onToggle={toggleIntakeCheck}
+              onOpenManager={() => { setIsIntakeSheetOpen(false); setIntakeManager({ draft: null }); }}
+              onRecordOther={() => { setIsIntakeSheetOpen(false); openQuickDraft(SUPPLEMENT_CATEGORY); }}
+              onClose={() => setIsIntakeSheetOpen(false)} />
+          )}
+          {intakeManager && (
+            <IntakeManager items={intakeItems} today={formatDate(new Date())} initialDraft={intakeManager.draft} busy={intakeSaving} adherence={intakeAdherenceNow}
+              onSave={saveIntakeItem} onStop={stopIntakeItem} onResume={resumeIntakeItem} onDelete={deleteIntakeItem}
+              onClose={() => setIntakeManager(null)} />
+          )}
+
           {/* ★ 기록을 저장하거나 수정한 직후 보여주는 AI 피드백 팝업 */}
           {feedbackPopupLog && (
             <div
@@ -4619,6 +5390,13 @@
                 </div>
 
                 {feedbackPopupLog.portionCheck && <div className="-mt-2 mb-4">{renderPortionCheck(feedbackPopupLog)}</div>}
+                {isSupplementLog(feedbackPopupLog) && <div className="-mt-2 mb-4"><SupplementInfoBox log={feedbackPopupLog} dayLogs={[...logs, ...intakeSupplementDayLogs]} /></div>}
+                {isSupplementLog(feedbackPopupLog) && !feedbackPopupLog.isEditMode && (
+                  <button type="button" onClick={() => openIntakeFromLog(feedbackPopupLog)} className="w-full mb-3 text-left bg-violet-50 border border-violet-100 rounded-2xl px-4 py-3" data-intake-register-offer>
+                    <span className="block text-sm font-bold text-violet-800">📌 매일 드시는 건가요?</span>
+                    <span className="block text-xs text-violet-700 mt-0.5">복용 관리에 등록하면 다음부턴 💊 복용에서 눌러 체크만 하면 돼요 →</span>
+                  </button>
+                )}
 
                 <button
                   type="button"
@@ -4771,8 +5549,8 @@
                     <label className="text-sm font-bold text-gray-600 mb-2 block">무엇을 하셨나요?</label>
                     <div className="flex flex-wrap gap-2">
                       {defaultCategories.filter(c => c !== '생체기록').map(cat => (
-                        <button type="button" key={cat} onClick={() => setDraft({...draft, category: cat, timeConfirmed: false})} className={`px-4 py-2 rounded-full text-sm font-bold transition ${draft.category === cat ? (cat === '운동' ? 'bg-green-500 text-white' : 'bg-blue-600 text-white') : 'bg-gray-100 text-gray-600'}`}>
-                          {cat === '운동' ? '🏃‍♂️ ' : ''}{cat}
+                        <button type="button" key={cat} onClick={() => setDraft({...draft, category: cat, timeConfirmed: false})} className={`px-4 py-2 rounded-full text-sm font-bold transition ${draft.category === cat ? (cat === '운동' ? 'bg-green-500 text-white' : (cat === SUPPLEMENT_CATEGORY ? 'bg-violet-600 text-white' : 'bg-blue-600 text-white')) : 'bg-gray-100 text-gray-600'}`}>
+                          {cat === '운동' ? '🏃‍♂️ ' : (cat === SUPPLEMENT_CATEGORY ? '💊 ' : '')}{cat}
                         </button>
                       ))}
                     </div>
@@ -4821,7 +5599,7 @@
                         <img key={i} src={src} onClick={() => setLightboxImage(src)} className="w-32 h-32 object-cover rounded-2xl bg-gray-100 shrink-0 border border-gray-200 cursor-pointer active:opacity-80 transition" />
                       ))}
                     </div>
-                    <input type="text" placeholder={draft.category === '운동' ? "추가 메모 (예: 스쿼트 50개 추가함)" : "추가 메모 (예: 밥은 반 공기만 먹음)"} value={draft.memo} onChange={e => setDraft({...draft, memo: e.target.value})} onBlur={handleInputBlur} className="w-full bg-gray-50 border border-gray-200 rounded-xl p-4 outline-none focus:border-blue-500 text-sm" />
+                    <input type="text" placeholder={draft.category === '운동' ? "추가 메모 (예: 스쿼트 50개 추가함)" : (draft.category === SUPPLEMENT_CATEGORY ? "추가 메모 (예: 아침 식후에 먹음)" : "추가 메모 (예: 밥은 반 공기만 먹음)")} value={draft.memo} onChange={e => setDraft({...draft, memo: e.target.value})} onBlur={handleInputBlur} className="w-full bg-gray-50 border border-gray-200 rounded-xl p-4 outline-none focus:border-blue-500 text-sm" />
                   </div>
                 )}
 
@@ -4842,7 +5620,7 @@
                     )}
                     <textarea
                       ref={naturalTextRef}
-                      placeholder={draft.category === '운동' ? "예: 런닝머신 30분 뛰었어" : "예: 아침으로 사과 반 개 먹었어"}
+                      placeholder={draft.category === '운동' ? "예: 런닝머신 30분 뛰었어" : (draft.category === SUPPLEMENT_CATEGORY ? "예: 발효효소 1포, 유산균 1캡슐 (포장 사진을 올리면 기능성 문구도 읽어요)" : "예: 아침으로 사과 반 개 먹었어")}
                       value={draft.naturalText} onChange={e => setDraft({...draft, naturalText: e.target.value})} onBlur={handleInputBlur}
                       onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleUploadConfirm(); } }}
                       className="w-full bg-gray-50 border border-gray-200 p-4 rounded-2xl outline-none focus:border-blue-500 h-24 resize-none text-base leading-relaxed"
