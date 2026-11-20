@@ -133,7 +133,8 @@ const box = grab('    function SupplementInfoBox(', '    // ★ v0.4.4 복용 �
 assert.ok(box.indexOf('const [open, setOpen] = useState(false);') < box.indexOf('if (!isSupplementLog(log)) return null;'), 'hook before early return');
 assert.ok(box.includes('{open && ('), 'AI note hidden until tapped');
 const report = grab('        intakeDayChecks.forEach(c => {', "const summaryData = `기록 내역 (시간순)");
-assert.ok(!report.includes("'medicine'"), 'medicines are never written into the daily report');
+// v0.4.7부터 약은 이름 없이 체크 수만 보낸다(이름이 들어가면 안 됨).
+assert.ok(!report.includes("'medicine'") || (report.includes('[등록한 약 복용]') && !/\$\{item\.name\}[^\n]*등록한 약/.test(report)), 'medicine names are never written into the daily report');
 pass('screen: intake sheet and manager wiring, medicines kept out of AI, supplement records, reports');
 
 console.log(`\n${passed} passed`);

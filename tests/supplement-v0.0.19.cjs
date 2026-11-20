@@ -75,7 +75,8 @@ function fakeSupabase(store) {
   assert.equal(server.isMealRow({ category: '건강식품' }), false);
   assert.equal(server.isMealRow({ category: '간식' }), true);
   assert.ok(src.includes('const meals = inWindow.filter((row) => !NON_MEAL_CATEGORIES.includes(row.category));'));
-  assert.ok(src.includes("'건강식품' 기록은 식사·간식 횟수로 세지 말고"));
+  // v0.0.20부터는 하루·기간 총평이 공통 규칙(getIntakeReportRules)을 쓴다.
+  assert.ok(src.includes("'건강식품' 기록은 식사·간식 횟수로 세지 말고") || src.includes("'건강식품' 기록·체크는 식사·간식 횟수로 세지 마세요"));
   pass('supplements are not meals (habit, condition, late meals) and daily report is told so');
 
   // 새 기록 저장

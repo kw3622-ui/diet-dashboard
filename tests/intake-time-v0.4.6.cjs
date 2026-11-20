@@ -11,10 +11,11 @@ const grab = (a, b) => { const i = html.indexOf(a), j = html.indexOf(b, i); asse
 
 const sheet = grab('    function IntakeSheet(', '    function emptyIntakeDraft(');
 assert.ok(sheet.includes("const [sheetTime, setSheetTime] = useState(isToday ? getCurrentTimeStr() : '');"), 'today: now, past day: empty');
-assert.ok(sheet.includes('<input type="time" value={sheetTime} onChange={e => setSheetTime(e.target.value)} aria-label="먹은 시각"'), 'one time field at the top');
+// v0.4.7부터는 칸을 바꾸면 이 창에서 체크한 줄도 따라간다(changeSheetTime).
+assert.ok(/<input type="time" value=\{sheetTime\} onChange=\{e => (setSheetTime|changeSheetTime)\(e\.target\.value\)\} aria-label="먹은 시각"/.test(sheet), 'one time field at the top');
 assert.ok(sheet.indexOf('data-intake-sheet-time') < sheet.indexOf('data-intake-ack'), 'time field above the list');
-assert.ok(sheet.includes('onClick={() => onToggle(item, slot, sheetTime)}'), 'checks use the field time');
-assert.ok(sheet.includes('data-intake-row-time>{time}</span>'), 'checked rows show their saved time');
+assert.ok(sheet.includes('onClick={() => onToggle(item, slot, sheetTime)}') || sheet.includes('onToggle(item, slot, sheetTime);'), 'checks use the field time');
+assert.ok(sheet.includes('data-intake-row-time>{time}</span>') || sheet.includes('data-intake-row-time>\n                  {time}'), 'checked rows show their saved time');
 assert.equal((sheet.match(/type="time"/g) || []).length, 1, 'no per-row time box any more');
 assert.ok(!html.includes('setIntakeCheckTime') && !html.includes('onTimeChange'), 'old per-row editing removed');
 pass('sheet: one "먹은 시각" field (now / empty for past days), rows checked with it, saved time shown on rows');

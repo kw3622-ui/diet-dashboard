@@ -92,8 +92,9 @@ for (const [name, text] of [
   ['auto-done uses intake', 'if (intakeRoutineAutoDone(routine, date, intakeItems, intakeChecks, hasSupplementLog)) return true;'],
   ['monthly report counts supplement checks', '- 등록한 건강식품 복용 체크: ${checkSummary || \'없음\'}'],
   ['weekly report lists supplement checks', '(등록한 건강식품 복용 체크)`));'],
-  ['report tells AI supplements are not meals', '건강식품은 식사가 아니므로 식사·간식으로 세지 말고'],
 ]) assert.ok(html.includes(text), name);
+// v0.4.7부터 이 안내는 서버(diet-ai v0.0.20)가 붙인다.
+assert.ok(html.includes('건강식품은 식사가 아니므로 식사·간식으로 세지 말고') || html.includes('규칙은 서버 v0.0.20이 붙인다'), 'report tells AI supplements are not meals');
 const report = grab('        const periodSupplementChecks = ', '        if (statsMode === \'month\') {');
 assert.ok(report.includes("x.item?.kind === 'supplement'"), 'medicines never go into period reports');
 pass('screen wiring: home strip, adherence, routine link, period reports (medicines excluded)');
