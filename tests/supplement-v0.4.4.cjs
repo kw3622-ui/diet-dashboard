@@ -117,7 +117,7 @@ for (const [name, text] of [
   ['medicine form says no AI', '약은 AI 설명을 만들지 않고, AI 리포트에도 보내지 않아요.'],
   ['daily report gets supplement checks only', "if (item?.kind === 'supplement') summaryLines.push("],
   ['pharmacist notice', '등록하신 약과 건강식품을 같이 드셔도 되는지 약사에게 한 번 확인해 보세요.'],
-  ['checks saved one per item, day and slot', ".upsert(row, { onConflict: 'item_id,check_date,slot' })"],
+  ['checks saved one per item, day and slot', html.includes(".upsert(rowsToSave, { onConflict: 'item_id,check_date,slot' })") ? ".upsert(rowsToSave, { onConflict: 'item_id,check_date,slot' })" : ".upsert(row, { onConflict: 'item_id,check_date,slot' })"],
   ['record table intake row', 'data-intake-record-row'],
   ['card combos include checked supplements', 'dayLogs={[...logs, ...intakeSupplementDayLogs]}'],
   ['today table row style', "(isSupp ? '💊' : (row.log.category === '야식' ? '🌃' : '🍪'))"],

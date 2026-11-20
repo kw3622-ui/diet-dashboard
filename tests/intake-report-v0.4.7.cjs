@@ -50,7 +50,9 @@ new vm.Script(
   pass('reports: medicines only as counts without names, period range counts');
 }
 
-{
+// v0.4.8부터 시각 칸 따라가기는 체크 알림·줄 메뉴로 바뀌었다(tests/intake-sheet-v0.4.8.cjs에서 검사).
+if (html.includes('data-intake-toast')) console.log('SKIP sheet part: replaced in v0.4.8');
+else {
   const sheet = grab('    function IntakeSheet(', '    function emptyIntakeDraft(');
   assert.ok(sheet.includes('const [sessionKeys, setSessionKeys] = useState([]);'));
   assert.ok(sheet.includes("const targets = rows.filter(({ item, slot }) => sessionKeys.includes(item.id + '|' + slot) && checks[intakeCheckKey(item.id, date, slot)]);"), 'only rows checked in this window follow the field');

@@ -9,6 +9,8 @@ let passed = 0;
 const pass = (name) => { passed++; console.log('PASS ' + name); };
 const grab = (a, b) => { const i = html.indexOf(a), j = html.indexOf(b, i); assert.ok(i > 0 && j > i, a); return html.slice(i, j); };
 
+// v0.4.8부터 위 "먹은 시각" 칸은 없어지고 체크 알림·줄 메뉴로 바뀌었다(tests/intake-sheet-v0.4.8.cjs에서 검사).
+if (html.includes('data-intake-toast')) { console.log('SKIP: replaced in v0.4.8 (see tests/intake-sheet-v0.4.8.cjs)'); process.exit(0); }
 const sheet = grab('    function IntakeSheet(', '    function emptyIntakeDraft(');
 assert.ok(sheet.includes("const [sheetTime, setSheetTime] = useState(isToday ? getCurrentTimeStr() : '');"), 'today: now, past day: empty');
 // v0.4.7부터는 칸을 바꾸면 이 창에서 체크한 줄도 따라간다(changeSheetTime).
