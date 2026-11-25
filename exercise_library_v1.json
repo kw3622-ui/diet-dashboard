@@ -6,7 +6,8 @@
   "imageCredit": "그림: free-exercise-db (퍼블릭 도메인)",
   "equipmentLabels": {
     "barbell": "바벨", "dumbbell": "덤벨", "cable": "케이블", "machine": "머신", "smith": "스미스 머신",
-    "bodyweight": "맨몸", "pullup_bar": "철봉", "band": "밴드", "cardio_machine": "유산소 기구", "none": "도구 없음"
+    "bodyweight": "맨몸", "pullup_bar": "철봉", "band": "밴드", "cardio_machine": "유산소 기구", "none": "도구 없음",
+    "kettlebell": "케틀벨", "parallel_bars": "평행봉", "ab_wheel": "복근 롤러"
   },
   "exercises": [
     {
@@ -608,6 +609,750 @@
       "steps": ["발판 위에 발 전체를 올립니다.", "무릎이 안쪽으로 모이지 않게 번갈아 밟습니다.", "일정한 속도로 유지합니다."],
       "mistakes": ["손잡이에 체중을 싣기"],
       "easier": "천천히 밟기", "harder": "강도 올리기"
+    },
+    {
+      "key": "decline-barbell-bench-press", "name": "디클라인 바벨 벤치 프레스", "aliases": ["디클라인 벤치 프레스", "디클라인 프레스"],
+      "kind": "strength", "equipment": "barbell", "targets": ["chest.lower_chest", "arm.triceps"], "image": "Decline_Barbell_Bench_Press",
+      "summary": "머리 쪽이 낮은 벤치에 누워 바벨을 미는 운동입니다. 가슴 아랫부분(밑가슴)을 집중해서 키워요.",
+      "steps": ["디클라인 벤치에 다리를 걸고 누워 바벨을 어깨너비보다 조금 넓게 잡습니다.", "바벨을 가슴 아래쪽(명치 위)으로 천천히 내립니다.", "가슴을 조이며 바벨을 처음 자리로 밀어 올립니다."],
+      "mistakes": ["바벨을 목 쪽으로 내리기", "엉덩이를 들어 반동 쓰기"],
+      "easier": "무게 낮추기, 딥스 머신", "harder": "무게 올리기"
+    },
+    {
+      "key": "dumbbell-fly", "name": "덤벨 플라이", "aliases": ["덤벨 플라이스", "플랫 덤벨 플라이", "덤벨 플라이 운동"],
+      "kind": "strength", "equipment": "dumbbell", "targets": ["chest.mid_chest"], "image": "Dumbbell_Flyes",
+      "summary": "벤치에 누워 덤벨을 든 팔을 크게 벌렸다 모으는 운동입니다. 가슴 근육을 늘였다 조이는 느낌이 좋아요.",
+      "steps": ["벤치에 누워 덤벨을 가슴 위로 들고 팔꿈치를 살짝 굽힙니다.", "팔꿈치 각도를 그대로 둔 채 양팔을 옆으로 크게 벌리며 내립니다.", "가슴을 조이며 큰 원을 그리듯 덤벨을 다시 모읍니다."],
+      "mistakes": ["너무 깊이 내려 어깨에 무리 주기", "팔꿈치를 폈다 굽혔다 하며 프레스처럼 하기"],
+      "easier": "가벼운 덤벨, 펙덱 플라이", "harder": "인클라인 덤벨 플라이"
+    },
+    {
+      "key": "incline-dumbbell-fly", "name": "인클라인 덤벨 플라이", "aliases": ["인클라인 플라이"],
+      "kind": "strength", "equipment": "dumbbell", "targets": ["chest.upper_chest"], "image": "Incline_Dumbbell_Flyes",
+      "summary": "등받이를 30~45도로 세운 벤치에서 하는 덤벨 플라이입니다. 윗가슴을 채우는 데 좋아요.",
+      "steps": ["벤치 각도를 30~45도로 세우고 누워 덤벨을 가슴 위로 듭니다.", "팔꿈치를 살짝 굽힌 채 양팔을 옆으로 벌리며 내립니다.", "윗가슴을 조이며 덤벨을 다시 모읍니다."],
+      "mistakes": ["각도를 너무 세워 어깨 운동이 되기", "무거운 무게로 반동 쓰기"],
+      "easier": "가벼운 덤벨", "harder": "인클라인 케이블 플라이"
+    },
+    {
+      "key": "pec-deck", "name": "펙덱 플라이", "aliases": ["펙 덱 플라이", "펙덱", "버터플라이", "버터 플라이 머신", "체스트 플라이 머신", "머신 플라이"],
+      "kind": "strength", "equipment": "machine", "targets": ["chest.mid_chest"], "image": "Butterfly",
+      "summary": "앉아서 양쪽 손잡이를 앞으로 모으는 가슴 머신입니다. 자세가 쉬워서 가슴을 조이는 느낌을 익히기 좋아요.",
+      "steps": ["손잡이가 가슴 높이에 오도록 의자를 맞추고 등을 붙여 앉습니다.", "팔꿈치를 살짝 굽힌 채 손잡이를 앞으로 모아 가슴을 조입니다.", "가슴이 늘어나는 느낌이 들 때까지 천천히 벌립니다."],
+      "mistakes": ["등을 등받이에서 떼기", "손을 너무 뒤로 벌려 어깨에 무리 주기"],
+      "easier": "무게 낮추기", "harder": "케이블 크로스오버 플라이"
+    },
+    {
+      "key": "smith-bench-press", "name": "스미스 머신 벤치 프레스", "aliases": ["스미스 벤치 프레스", "스미스 벤치프레스", "스미스 플랫 벤치 프레스"],
+      "kind": "strength", "equipment": "smith", "targets": ["chest.mid_chest", "arm.triceps"], "image": "Smith_Machine_Bench_Press",
+      "summary": "레일에 고정된 바로 하는 벤치 프레스입니다. 바가 흔들리지 않아 혼자서도 비교적 안전하게 무게를 올릴 수 있어요.",
+      "steps": ["벤치를 바 아래에 두고 누워 바가 가슴 중앙 위에 오게 맞춥니다.", "바를 풀고 가슴 중앙까지 천천히 내립니다.", "가슴을 조이며 바를 밀어 올립니다."],
+      "mistakes": ["바가 목 쪽에 오게 눕기", "내릴 때 가슴에서 튕기기"],
+      "easier": "무게 낮추기, 머신 체스트 프레스", "harder": "바벨 플랫 벤치 프레스"
+    },
+    {
+      "key": "smith-incline-press", "name": "스미스 머신 인클라인 프레스", "aliases": ["스미스 인클라인 프레스", "스미스 인클라인 벤치 프레스", "스미스 머신 인클라인 벤치 프레스"],
+      "kind": "strength", "equipment": "smith", "targets": ["chest.upper_chest", "shoulder.front_delt"], "image": "Smith_Machine_Incline_Bench_Press",
+      "summary": "인클라인 벤치를 스미스 머신 아래에 두고 하는 프레스입니다. 윗가슴을 안정적으로 키워요.",
+      "steps": ["벤치를 30~45도로 세워 바 아래에 두고, 바가 윗가슴 위에 오게 눕습니다.", "바를 풀고 윗가슴(쇄골 아래)까지 천천히 내립니다.", "가슴을 조이며 바를 밀어 올립니다."],
+      "mistakes": ["벤치 각도를 너무 세우기", "팔꿈치를 옆으로 너무 벌리기"],
+      "easier": "무게 낮추기", "harder": "바벨 인클라인 벤치 프레스"
+    },
+    {
+      "key": "machine-incline-chest-press", "name": "인클라인 체스트 프레스 머신", "aliases": ["머신 인클라인 체스트 프레스", "인클라인 체스트 프레스", "인클라인 머신 프레스"],
+      "kind": "strength", "equipment": "machine", "targets": ["chest.upper_chest"], "image": "Leverage_Incline_Chest_Press",
+      "summary": "손잡이를 비스듬히 위로 미는 가슴 머신입니다. 윗가슴을 안전하게 키울 수 있어요.",
+      "steps": ["손잡이가 가슴 위쪽 높이에 오도록 의자를 맞추고 앉습니다.", "가슴을 펴고 손잡이를 비스듬히 위로 밀어냅니다.", "가슴이 늘어날 때까지 천천히 돌아옵니다."],
+      "mistakes": ["어깨가 앞으로 말리기", "팔꿈치를 끝까지 잠그기"],
+      "easier": "무게 낮추기", "harder": "스미스 머신 인클라인 프레스"
+    },
+    {
+      "key": "chest-dips", "name": "딥스", "aliases": ["체스트 딥스", "가슴 딥스", "평행봉 딥스", "딥스 운동"],
+      "kind": "strength", "equipment": "parallel_bars", "targets": ["chest.lower_chest", "arm.triceps"], "image": "Dips_-_Chest_Version",
+      "summary": "평행봉을 잡고 몸을 내렸다 올리는 맨몸 운동입니다. 밑가슴과 삼두를 함께 키워요.",
+      "steps": ["평행봉을 잡고 팔을 펴서 몸을 띄웁니다.", "상체를 조금 앞으로 기울이며 팔꿈치를 굽혀 어깨가 팔꿈치 높이가 될 때까지 내려갑니다.", "손바닥으로 봉을 밀어 처음 자세로 올라옵니다."],
+      "mistakes": ["너무 깊이 내려가 어깨 앞이 아프기", "어깨가 귀 쪽으로 올라가기"],
+      "easier": "밴드 어시스티드 딥스, 어시스티드 딥스 머신", "harder": "중량 딥스"
+    },
+    {
+      "key": "decline-push-up", "name": "디클라인 푸시업", "aliases": ["발 올린 푸시업", "인클라인 푸시업 발", "디클라인 푸쉬업"],
+      "kind": "strength", "equipment": "bodyweight", "targets": ["chest.upper_chest", "shoulder.front_delt"], "image": "Push-Ups_With_Feet_Elevated",
+      "summary": "발을 의자나 침대 위에 올리고 하는 푸시업입니다. 기구 없이 윗가슴을 단련해요.",
+      "steps": ["발을 의자 위에 올리고 손은 어깨너비보다 조금 넓게 바닥을 짚습니다.", "몸을 일자로 유지한 채 가슴이 바닥에 가까워질 때까지 내려갑니다.", "바닥을 밀어 올라옵니다."],
+      "mistakes": ["허리가 아래로 처지기", "엉덩이를 높이 들기"],
+      "easier": "푸시업", "harder": "발을 더 높이 올리기"
+    },
+    {
+      "key": "wide-push-up", "name": "와이드 푸시업", "aliases": ["와이드 푸쉬업", "넓게 푸시업"],
+      "kind": "strength", "equipment": "bodyweight", "targets": ["chest.mid_chest"], "image": "Push-Up_Wide",
+      "summary": "손을 어깨보다 넓게 짚고 하는 푸시업입니다. 삼두보다 가슴에 더 집중돼요.",
+      "steps": ["손을 어깨너비의 1.5배쯤으로 벌려 바닥을 짚고 몸을 일자로 만듭니다.", "가슴이 바닥에 가까워질 때까지 내려갑니다.", "가슴을 조이며 바닥을 밀어 올라옵니다."],
+      "mistakes": ["손을 너무 넓게 벌려 어깨가 아프기", "허리 처지기"],
+      "easier": "무릎 대고 하기", "harder": "디클라인 푸시업"
+    },
+    {
+      "key": "knee-push-up", "name": "무릎 푸시업", "aliases": ["무릎 대고 푸시업", "니 푸시업", "무릎 푸쉬업"],
+      "kind": "strength", "equipment": "bodyweight", "targets": ["chest.mid_chest", "arm.triceps"], "image": null,
+      "summary": "무릎을 바닥에 대고 하는 쉬운 푸시업입니다. 푸시업을 여러 번 하기 어려울 때 가슴을 키우기 좋아요.",
+      "steps": ["무릎을 바닥에 대고 손은 어깨너비보다 조금 넓게 짚습니다.", "무릎부터 머리까지 일자로 유지하며 가슴을 바닥 가까이 내립니다.", "바닥을 밀어 올라옵니다."],
+      "mistakes": ["엉덩이만 뒤로 빼기", "고개를 숙여 바닥 보기"],
+      "easier": "벽 짚고 푸시업", "harder": "푸시업"
+    },
+    {
+      "key": "dumbbell-pullover", "name": "덤벨 풀오버", "aliases": ["풀오버", "덤벨 풀 오버"],
+      "kind": "strength", "equipment": "dumbbell", "targets": ["chest.mid_chest", "back.lat"], "image": "Bent-Arm_Dumbbell_Pullover",
+      "summary": "누워서 덤벨 하나를 머리 뒤로 넘겼다 가슴 위로 가져오는 운동입니다. 가슴과 등 넓이를 함께 써요.",
+      "steps": ["벤치에 누워 덤벨 하나를 양손으로 받쳐 가슴 위로 듭니다.", "팔꿈치를 살짝 굽힌 채 덤벨을 머리 뒤로 천천히 넘깁니다.", "가슴과 겨드랑이 아래 힘으로 덤벨을 가슴 위로 다시 가져옵니다."],
+      "mistakes": ["너무 깊이 넘겨 어깨에 무리 주기", "허리를 크게 젖히기"],
+      "easier": "가벼운 덤벨", "harder": "무게 올리기"
+    },
+    {
+      "key": "cable-chest-press", "name": "케이블 체스트 프레스", "aliases": ["케이블 프레스", "스탠딩 케이블 프레스"],
+      "kind": "strength", "equipment": "cable", "targets": ["chest.mid_chest"], "image": "Cable_Chest_Press",
+      "summary": "양쪽 케이블 손잡이를 잡고 앞으로 미는 가슴 운동입니다. 끝까지 힘이 걸려서 가슴을 조이기 좋아요.",
+      "steps": ["케이블을 가슴 높이에 맞추고 손잡이를 잡아 한 발 앞으로 나와 섭니다.", "가슴을 펴고 손잡이를 앞으로 밀어 손을 모읍니다.", "가슴이 늘어날 때까지 천천히 돌아옵니다."],
+      "mistakes": ["허리를 젖혀 밀기", "팔로만 밀기"],
+      "easier": "무게 낮추기", "harder": "한 팔씩 하기"
+    },
+    {
+      "key": "underhand-lat-pulldown", "name": "언더그립 랫 풀다운", "aliases": ["언더 그립 랫 풀다운", "리버스 그립 랫 풀다운", "언더그립 랫풀다운"],
+      "kind": "strength", "equipment": "cable", "targets": ["back.lat", "arm.biceps"], "image": "Close-Grip_Front_Lat_Pulldown",
+      "summary": "바를 손바닥이 나를 보게(언더그립) 어깨너비로 잡고 당기는 랫 풀다운입니다. 등 아래쪽까지 길게 쓰고 이두도 함께 써요.",
+      "steps": ["바를 어깨너비 정도로 좁게 잡고 앉아 허벅지를 패드에 고정합니다.", "가슴을 펴고 팔꿈치를 옆구리로 끌어내리듯 바를 윗가슴까지 당깁니다.", "팔이 펴질 때까지 천천히 올려 보냅니다."],
+      "mistakes": ["몸을 뒤로 크게 젖혀 당기기", "바를 목 뒤로 당기기"],
+      "easier": "무게 낮추기", "harder": "친업"
+    },
+    {
+      "key": "one-arm-lat-pulldown", "name": "원 암 랫 풀다운", "aliases": ["원암 랫풀다운", "한 팔 랫 풀다운", "싱글 암 랫 풀다운"],
+      "kind": "strength", "equipment": "cable", "targets": ["back.lat"], "image": "One_Arm_Lat_Pulldown",
+      "summary": "한 손으로 손잡이를 잡고 당기는 랫 풀다운입니다. 좌우 등 힘 차이를 맞추기 좋아요.",
+      "steps": ["손잡이 하나를 달고 한 손으로 잡아 앉습니다.", "팔꿈치를 옆구리 쪽으로 끌어내리며 손잡이를 어깨 옆까지 당깁니다.", "등이 늘어나도록 천천히 올려 보냅니다."],
+      "mistakes": ["몸통을 비틀어 당기기", "어깨가 올라간 채 당기기"],
+      "easier": "무게 낮추기", "harder": "무게 올리기"
+    },
+    {
+      "key": "bent-over-dumbbell-row", "name": "덤벨 벤트 오버 로우", "aliases": ["덤벨 로우", "투 암 덤벨 로우", "덤벨 벤트오버 로우", "벤트 오버 덤벨 로우"],
+      "kind": "strength", "equipment": "dumbbell", "targets": ["back.mid_back", "back.lat"], "image": "Bent_Over_Two-Dumbbell_Row",
+      "summary": "상체를 숙이고 양손 덤벨을 허리 쪽으로 당기는 운동입니다. 등 두께를 키워요.",
+      "steps": ["덤벨을 양손에 들고 무릎을 살짝 굽혀 상체를 45도쯤 숙입니다.", "팔꿈치를 뒤로 보내며 덤벨을 배꼽 옆까지 당깁니다.", "날개뼈가 벌어질 때까지 천천히 내립니다."],
+      "mistakes": ["허리가 둥글게 말리기", "상체를 들었다 놨다 반동 쓰기"],
+      "easier": "원 암 덤벨 로우, 인클라인 덤벨 로우", "harder": "바벨 로우"
+    },
+    {
+      "key": "incline-dumbbell-row", "name": "인클라인 덤벨 로우", "aliases": ["체스트 서포티드 로우", "체스트 서포티드 덤벨 로우", "인클라인 벤치 로우"],
+      "kind": "strength", "equipment": "dumbbell", "targets": ["back.mid_back"], "image": "Dumbbell_Incline_Row",
+      "summary": "인클라인 벤치에 엎드려 덤벨을 당기는 운동입니다. 허리 부담 없이 등 두께를 키워요.",
+      "steps": ["벤치를 30~45도로 세우고 가슴을 대고 엎드려 덤벨을 늘어뜨립니다.", "팔꿈치를 뒤로 보내며 덤벨을 옆구리까지 당깁니다.", "천천히 팔을 펴며 내립니다."],
+      "mistakes": ["가슴을 벤치에서 떼고 반동 쓰기", "어깨를 귀 쪽으로 으쓱하며 당기기"],
+      "easier": "가벼운 덤벨", "harder": "무게 올리기, 꼭대기에서 1초 멈추기"
+    },
+    {
+      "key": "machine-row", "name": "머신 로우", "aliases": ["시티드 로우 머신", "로우 머신", "레버리지 로우", "아이소 로우"],
+      "kind": "strength", "equipment": "machine", "targets": ["back.mid_back", "back.lat"], "image": "Leverage_Iso_Row",
+      "summary": "가슴 패드에 기대 앉아 손잡이를 뒤로 당기는 등 머신입니다. 자세가 고정돼 등 두께에 집중하기 쉬워요.",
+      "steps": ["가슴을 패드에 붙이고 손잡이를 잡을 수 있게 의자를 맞춥니다.", "팔꿈치를 뒤로 보내며 날개뼈를 모아 손잡이를 당깁니다.", "등이 늘어날 때까지 천천히 돌려보냅니다."],
+      "mistakes": ["가슴을 패드에서 떼고 몸을 젖혀 당기기", "팔로만 당기기"],
+      "easier": "무게 낮추기", "harder": "한 팔씩 하기"
+    },
+    {
+      "key": "machine-high-row", "name": "머신 하이 로우", "aliases": ["하이 로우", "레버리지 하이 로우", "하이 로우 머신"],
+      "kind": "strength", "equipment": "machine", "targets": ["back.lat", "back.mid_back"], "image": "Leverage_High_Row",
+      "summary": "위에서 아래 뒤쪽으로 손잡이를 당기는 등 머신입니다. 랫 풀다운과 로우의 중간쯤 되는 운동이에요.",
+      "steps": ["허벅지를 패드에 고정하고 위쪽 손잡이를 잡습니다.", "가슴을 펴고 팔꿈치를 아래 뒤쪽으로 끌어 손잡이를 당깁니다.", "팔이 펴질 때까지 천천히 돌려보냅니다."],
+      "mistakes": ["어깨를 으쓱하며 당기기", "반동으로 몸을 젖히기"],
+      "easier": "무게 낮추기", "harder": "한 팔씩 하기"
+    },
+    {
+      "key": "inverted-row", "name": "인버티드 로우", "aliases": ["인버티드로우", "호주식 턱걸이", "오스트레일리안 풀업", "바디웨이트 로우"],
+      "kind": "strength", "equipment": "smith", "targets": ["back.mid_back", "arm.biceps"], "image": "Inverted_Row",
+      "summary": "허리 높이의 바 아래에 누워 몸을 바 쪽으로 끌어올리는 맨몸 등 운동입니다. 풀업이 어려울 때 좋아요.",
+      "steps": ["스미스 머신 바를 허리 높이에 두고 아래에 누워 어깨너비로 잡습니다.", "발뒤꿈치부터 머리까지 일자로 만들고 가슴을 바 쪽으로 당겨 올립니다.", "팔이 펴질 때까지 천천히 내려갑니다."],
+      "mistakes": ["엉덩이가 처지기", "목만 내밀어 바에 닿기"],
+      "easier": "바를 더 높이 두기, 무릎 굽히기", "harder": "바를 낮추기, 발 올리기"
+    },
+    {
+      "key": "reverse-grip-barbell-row", "name": "리버스 그립 바벨 로우", "aliases": ["언더 그립 바벨 로우", "언더그립 바벨로우", "리버스 바벨 로우"],
+      "kind": "strength", "equipment": "barbell", "targets": ["back.lat", "back.mid_back"], "image": "Reverse_Grip_Bent-Over_Rows",
+      "summary": "바벨을 손바닥이 앞을 보게(언더그립) 잡고 당기는 로우입니다. 등 아래쪽(광배)에 더 잘 걸려요.",
+      "steps": ["바벨을 어깨너비로 언더그립으로 잡고 상체를 45도쯤 숙입니다.", "팔꿈치를 몸에 붙여 뒤로 보내며 바벨을 배꼽까지 당깁니다.", "천천히 팔을 펴며 내립니다."],
+      "mistakes": ["상체가 점점 세워지기", "허리 말리기"],
+      "easier": "무게 낮추기", "harder": "무게 올리기"
+    },
+    {
+      "key": "rack-pull", "name": "랙 풀", "aliases": ["랙풀", "랙 데드리프트"],
+      "kind": "strength", "equipment": "barbell", "targets": ["back.lower_back", "back.mid_back", "legs.glutes"], "image": "Rack_Pulls",
+      "summary": "무릎 높이의 받침대 위 바벨을 들어 올리는 짧은 데드리프트입니다. 등과 허리를 무겁게 단련해요.",
+      "steps": ["파워랙 안전봉을 무릎 바로 아래에 맞추고 바벨을 올려 둡니다.", "등을 곧게 펴고 엉덩이를 앞으로 밀며 일어섭니다.", "엉덩이를 뒤로 빼며 바벨을 받침대에 천천히 내려놓습니다."],
+      "mistakes": ["허리를 젖혀 마무리하기", "바벨이 몸에서 떨어지기"],
+      "easier": "무게 낮추기", "harder": "데드리프트"
+    },
+    {
+      "key": "superman", "name": "슈퍼맨", "aliases": ["슈퍼맨 운동", "슈퍼맨 자세"],
+      "kind": "strength", "equipment": "bodyweight", "targets": ["back.lower_back", "legs.glutes"], "image": "Superman",
+      "summary": "엎드려서 팔과 다리를 동시에 들어 올리는 운동입니다. 기구 없이 허리와 엉덩이를 단련해요.",
+      "steps": ["바닥에 엎드려 팔을 머리 위로 뻗습니다.", "팔과 다리를 동시에 살짝 들어 2초 버팁니다.", "천천히 내려놓습니다."],
+      "mistakes": ["너무 높이 들어 허리 꺾기", "고개를 크게 들기"],
+      "easier": "팔이나 다리만 들기", "harder": "버티는 시간 늘리기"
+    },
+    {
+      "key": "bird-dog", "name": "버드독", "aliases": ["버드 독", "버드도그"],
+      "kind": "strength", "equipment": "bodyweight", "targets": ["back.lower_back", "core.abs"], "image": null,
+      "summary": "네발 자세에서 반대쪽 팔과 다리를 뻗는 운동입니다. 허리를 보호하는 코어 힘을 길러요.",
+      "steps": ["손은 어깨 아래, 무릎은 엉덩이 아래에 두고 네발 자세를 만듭니다.", "오른팔과 왼다리를 바닥과 나란히 뻗고 2초 버팁니다.", "돌아와서 반대쪽도 합니다."],
+      "mistakes": ["허리가 처지거나 비틀리기", "너무 빨리 하기"],
+      "easier": "다리만 뻗기", "harder": "뻗은 채 팔꿈치와 무릎 모으기"
+    },
+    {
+      "key": "kettlebell-row", "name": "케틀벨 로우", "aliases": ["케틀벨 벤트 오버 로우", "투 암 케틀벨 로우"],
+      "kind": "strength", "equipment": "kettlebell", "targets": ["back.mid_back"], "image": "Two-Arm_Kettlebell_Row",
+      "summary": "상체를 숙이고 케틀벨을 허리 쪽으로 당기는 운동입니다. 등 두께를 키워요.",
+      "steps": ["케틀벨을 양손(또는 한 손)에 들고 상체를 45도쯤 숙입니다.", "팔꿈치를 뒤로 보내며 케틀벨을 배 옆까지 당깁니다.", "천천히 내립니다."],
+      "mistakes": ["허리 말리기", "반동 쓰기"],
+      "easier": "가벼운 케틀벨", "harder": "무게 올리기"
+    },
+    {
+      "key": "weighted-pull-up", "name": "중량 풀업", "aliases": ["웨이티드 풀업", "중량 턱걸이"],
+      "kind": "strength", "equipment": "pullup_bar", "targets": ["back.lat", "arm.biceps"], "image": "Weighted_Pull_Ups",
+      "summary": "벨트나 조끼로 무게를 더해 하는 풀업입니다. 풀업을 10번 이상 쉽게 하게 되면 쓰는 단계예요.",
+      "steps": ["딥스 벨트에 원판을 걸거나 다리 사이에 덤벨을 끼웁니다.", "철봉에 매달려 턱이 봉을 넘을 때까지 몸을 당겨 올립니다.", "팔이 거의 펴질 때까지 천천히 내려옵니다."],
+      "mistakes": ["무게 때문에 반만 내려오기", "다리를 차며 반동 쓰기"],
+      "easier": "풀업", "harder": "무게 올리기"
+    },
+    {
+      "key": "good-morning", "name": "굿모닝", "aliases": ["굿모닝 운동", "바벨 굿모닝"],
+      "kind": "strength", "equipment": "barbell", "targets": ["legs.hamstrings", "back.lower_back"], "image": "Good_Morning",
+      "summary": "바벨을 어깨에 지고 인사하듯 상체를 숙였다 세우는 운동입니다. 뒷허벅지와 허리를 단련해요.",
+      "steps": ["바벨을 스쿼트처럼 어깨에 지고 다리를 어깨너비로 섭니다.", "무릎을 살짝 굽히고 엉덩이를 뒤로 빼며 상체를 바닥과 거의 나란히 숙입니다.", "엉덩이를 앞으로 밀며 일어섭니다."],
+      "mistakes": ["허리가 둥글게 말리기", "무거운 무게로 시작하기"],
+      "easier": "빈 바나 맨몸으로 하기", "harder": "루마니안 데드리프트"
+    },
+    {
+      "key": "barbell-shrug", "name": "바벨 슈러그", "aliases": ["슈러그", "바벨 쉬러그"],
+      "kind": "strength", "equipment": "barbell", "targets": ["back.mid_back"], "image": "Barbell_Shrug",
+      "summary": "바벨을 들고 어깨를 귀 쪽으로 으쓱 올리는 운동입니다. 목과 어깨 사이 승모근을 키워요(부위는 등 두께로 셉니다).",
+      "steps": ["바벨을 어깨너비로 잡고 똑바로 섭니다.", "팔은 편 채 어깨만 귀 쪽으로 최대한 올리고 1초 멈춥니다.", "천천히 내립니다."],
+      "mistakes": ["어깨를 돌리기", "팔을 굽혀 당기기"],
+      "easier": "덤벨 슈러그", "harder": "무게 올리기"
+    },
+    {
+      "key": "dumbbell-shrug", "name": "덤벨 슈러그", "aliases": ["덤벨 쉬러그"],
+      "kind": "strength", "equipment": "dumbbell", "targets": ["back.mid_back"], "image": "Dumbbell_Shrug",
+      "summary": "양손에 덤벨을 들고 어깨를 으쓱 올리는 운동입니다. 승모근을 키워요(부위는 등 두께로 셉니다).",
+      "steps": ["덤벨을 양손에 들고 몸 옆에 둡니다.", "어깨를 귀 쪽으로 최대한 올리고 1초 멈춥니다.", "천천히 내립니다."],
+      "mistakes": ["고개를 앞으로 빼기", "반동으로 튕기기"],
+      "easier": "가벼운 덤벨", "harder": "무게 올리기"
+    },
+    {
+      "key": "arnold-press", "name": "아놀드 프레스", "aliases": ["아널드 프레스", "덤벨 아놀드 프레스"],
+      "kind": "strength", "equipment": "dumbbell", "targets": ["shoulder.front_delt", "shoulder.side_delt"], "image": "Arnold_Dumbbell_Press",
+      "summary": "손바닥이 나를 보는 자세에서 덤벨을 돌리며 머리 위로 미는 어깨 운동입니다. 어깨 앞과 옆을 함께 써요.",
+      "steps": ["앉아서 덤벨을 턱 앞에 들고 손바닥이 얼굴을 보게 합니다.", "손목을 바깥으로 돌리며 덤벨을 머리 위로 밀어 올립니다.", "거꾸로 돌리며 처음 자세로 내립니다."],
+      "mistakes": ["허리를 젖혀 밀기", "너무 빠르게 돌리기"],
+      "easier": "시티드 덤벨 숄더 프레스", "harder": "무게 올리기"
+    },
+    {
+      "key": "standing-overhead-press", "name": "스탠딩 바벨 오버헤드 프레스", "aliases": ["오버헤드 프레스", "밀리터리 프레스", "스탠딩 밀리터리 프레스", "OHP"],
+      "kind": "strength", "equipment": "barbell", "targets": ["shoulder.front_delt", "arm.triceps"], "image": "Standing_Military_Press",
+      "summary": "서서 바벨을 쇄골 앞에서 머리 위로 미는 운동입니다. 어깨 전체와 코어를 함께 써요.",
+      "steps": ["바벨을 쇄골 앞에 얹고 어깨너비보다 조금 넓게 잡습니다.", "배와 엉덩이에 힘을 주고 바벨을 머리 위로 밀어 올립니다.", "쇄골 앞까지 천천히 내립니다."],
+      "mistakes": ["허리를 크게 젖히기", "무릎 반동으로 밀기"],
+      "easier": "시티드 덤벨 숄더 프레스", "harder": "무게 올리기"
+    },
+    {
+      "key": "smith-shoulder-press", "name": "스미스 머신 숄더 프레스", "aliases": ["스미스 숄더 프레스", "스미스 오버헤드 프레스", "스미스 머신 오버헤드 프레스"],
+      "kind": "strength", "equipment": "smith", "targets": ["shoulder.front_delt"], "image": "Smith_Machine_Overhead_Shoulder_Press",
+      "summary": "스미스 머신 바를 앉아서 머리 위로 미는 어깨 운동입니다. 바가 고정돼 무게를 안정적으로 올릴 수 있어요.",
+      "steps": ["벤치를 세워 바 아래에 두고 바가 턱 앞을 지나게 앉습니다.", "바를 풀고 턱 높이까지 내렸다가 머리 위로 밀어 올립니다.", "천천히 턱 높이까지 내립니다."],
+      "mistakes": ["바를 목 뒤로 내리기", "허리를 등받이에서 떼기"],
+      "easier": "머신 숄더 프레스", "harder": "시티드 바벨 숄더 프레스"
+    },
+    {
+      "key": "cable-lateral-raise", "name": "케이블 레터럴 레이즈", "aliases": ["케이블 사이드 레터럴 레이즈", "케이블 사레레", "원 암 케이블 레터럴 레이즈"],
+      "kind": "strength", "equipment": "cable", "targets": ["shoulder.side_delt"], "image": "Cable_Seated_Lateral_Raise",
+      "summary": "낮은 케이블을 한 손으로 잡고 옆으로 들어 올리는 운동입니다. 어깨 옆을 끝까지 자극해요.",
+      "steps": ["케이블을 가장 낮게 두고 반대쪽 손으로 손잡이를 잡습니다.", "팔꿈치를 살짝 굽힌 채 손을 어깨 높이까지 옆으로 들어 올립니다.", "천천히 내립니다."],
+      "mistakes": ["몸을 기울여 반동 쓰기", "어깨를 으쓱 올리기"],
+      "easier": "덤벨 레터럴 레이즈", "harder": "무게 올리기"
+    },
+    {
+      "key": "machine-lateral-raise", "name": "머신 레터럴 레이즈", "aliases": ["레터럴 레이즈 머신", "사이드 레터럴 머신"],
+      "kind": "strength", "equipment": "machine", "targets": ["shoulder.side_delt"], "image": null,
+      "summary": "앉아서 팔 옆의 패드를 옆으로 들어 올리는 어깨 머신입니다. 어깨 옆에 집중하기 쉬워요.",
+      "steps": ["팔꿈치 바깥쪽이 패드에 닿게 앉아 손잡이를 잡습니다.", "팔꿈치로 패드를 밀어 어깨 높이까지 옆으로 들어 올립니다.", "천천히 내립니다."],
+      "mistakes": ["어깨를 으쓱 올리기", "무거운 무게로 몸 흔들기"],
+      "easier": "무게 낮추기", "harder": "꼭대기에서 1초 멈추기"
+    },
+    {
+      "key": "dumbbell-front-raise", "name": "덤벨 프론트 레이즈", "aliases": ["덤벨 프런트 레이즈"],
+      "kind": "strength", "equipment": "dumbbell", "targets": ["shoulder.front_delt"], "image": "Front_Dumbbell_Raise",
+      "summary": "덤벨을 몸 앞에서 어깨 높이까지 들어 올리는 운동입니다. 어깨 앞쪽을 키워요.",
+      "steps": ["덤벨을 양손에 들고 허벅지 앞에 둡니다.", "팔꿈치를 살짝 굽힌 채 덤벨을 어깨 높이까지 앞으로 들어 올립니다.", "천천히 내립니다."],
+      "mistakes": ["허리를 젖혀 반동 쓰기", "어깨보다 높이 들기"],
+      "easier": "한 팔씩 번갈아", "harder": "무게 올리기"
+    },
+    {
+      "key": "barbell-upright-row", "name": "바벨 업라이트 로우", "aliases": ["바벨 업라이트로우"],
+      "kind": "strength", "equipment": "barbell", "targets": ["shoulder.side_delt"], "image": "Upright_Barbell_Row",
+      "summary": "바벨을 몸에 붙여 가슴 높이까지 끌어올리는 운동입니다. 어깨 옆과 승모근을 써요.",
+      "steps": ["바벨을 어깨너비로 잡고 섭니다.", "팔꿈치를 옆으로 들어 올리며 바벨을 가슴 아래까지 몸에 붙여 끌어올립니다.", "천천히 내립니다."],
+      "mistakes": ["손을 너무 좁게 잡아 어깨가 찝히기", "팔꿈치보다 손이 높아지기"],
+      "easier": "케이블 업라이트 로우", "harder": "무게 올리기"
+    },
+    {
+      "key": "band-pull-apart", "name": "밴드 풀 어파트", "aliases": ["밴드 풀어파트", "밴드 벌리기"],
+      "kind": "strength", "equipment": "band", "targets": ["shoulder.rear_delt", "back.mid_back"], "image": "Band_Pull_Apart",
+      "summary": "고무 밴드를 양손으로 잡고 옆으로 벌리는 운동입니다. 후면 어깨와 자세 근육을 깨워요.",
+      "steps": ["밴드를 어깨너비로 잡고 팔을 가슴 앞으로 뻗습니다.", "팔을 편 채 밴드가 가슴에 닿을 때까지 옆으로 벌립니다.", "천천히 돌아옵니다."],
+      "mistakes": ["어깨를 으쓱 올리기", "허리를 젖히기"],
+      "easier": "약한 밴드", "harder": "손 간격 좁히기"
+    },
+    {
+      "key": "kettlebell-press", "name": "케틀벨 프레스", "aliases": ["케틀벨 숄더 프레스", "케틀벨 밀리터리 프레스"],
+      "kind": "strength", "equipment": "kettlebell", "targets": ["shoulder.front_delt", "arm.triceps"], "image": "Two-Arm_Kettlebell_Military_Press",
+      "summary": "어깨 앞에 든 케틀벨을 머리 위로 미는 운동입니다. 어깨와 코어를 함께 써요.",
+      "steps": ["케틀벨을 어깨 앞(랙 자세)에 들고 섭니다.", "배에 힘을 주고 케틀벨을 머리 위로 밀어 올립니다.", "어깨 앞으로 천천히 내립니다."],
+      "mistakes": ["허리 젖히기", "손목이 뒤로 꺾이기"],
+      "easier": "가벼운 케틀벨", "harder": "한 손씩 무겁게"
+    },
+    {
+      "key": "pike-push-up", "name": "파이크 푸시업", "aliases": ["파이크 푸쉬업", "어깨 푸시업"],
+      "kind": "strength", "equipment": "bodyweight", "targets": ["shoulder.front_delt", "arm.triceps"], "image": null,
+      "summary": "엉덩이를 높이 들어 ㅅ자를 만든 채 하는 푸시업입니다. 기구 없이 어깨를 키워요.",
+      "steps": ["푸시업 자세에서 발을 손 쪽으로 걸어와 엉덩이를 높이 들어 ㅅ자를 만듭니다.", "팔꿈치를 굽혀 정수리가 바닥에 가까워질 때까지 내려갑니다.", "바닥을 밀어 올라옵니다."],
+      "mistakes": ["엉덩이가 내려와 일반 푸시업이 되기", "팔꿈치를 옆으로 활짝 벌리기"],
+      "easier": "무릎 대고 하기", "harder": "발을 의자에 올리기"
+    },
+    {
+      "key": "barbell-curl", "name": "바벨 컬", "aliases": ["바벨 바이셉 컬", "스트레이트 바 컬", "바벨컬"],
+      "kind": "strength", "equipment": "barbell", "targets": ["arm.biceps"], "image": "Barbell_Curl",
+      "summary": "일자 바벨을 잡고 팔꿈치를 굽혀 들어 올리는 이두 운동입니다.",
+      "steps": ["바벨을 어깨너비로 손바닥이 앞을 보게 잡고 섭니다.", "팔꿈치를 몸 옆에 고정한 채 바벨을 가슴 앞까지 들어 올립니다.", "천천히 내립니다."],
+      "mistakes": ["허리를 젖혀 반동 쓰기", "팔꿈치가 앞으로 나가기"],
+      "easier": "이지바 바이셉 컬", "harder": "무게 올리기"
+    },
+    {
+      "key": "dumbbell-curl", "name": "덤벨 컬", "aliases": ["덤벨 바이셉 컬", "얼터네이트 덤벨 컬", "얼터네이팅 덤벨 컬", "덤벨 바이셉스 컬", "덤벨컬"],
+      "kind": "strength", "equipment": "dumbbell", "targets": ["arm.biceps"], "image": "Dumbbell_Bicep_Curl",
+      "summary": "덤벨을 들고 팔꿈치를 굽혀 들어 올리는 기본 이두 운동입니다. 양손 동시에 또는 번갈아 해요.",
+      "steps": ["덤벨을 양손에 들고 손바닥이 앞을 보게 섭니다.", "팔꿈치를 고정한 채 덤벨을 어깨 쪽으로 들어 올립니다.", "천천히 내립니다."],
+      "mistakes": ["몸을 흔들어 반동 쓰기", "끝까지 내리지 않기"],
+      "easier": "가벼운 덤벨", "harder": "인클라인 덤벨 컬"
+    },
+    {
+      "key": "preacher-curl", "name": "프리처 컬", "aliases": ["바벨 프리처 컬", "이지바 프리처 컬", "프리쳐 컬"],
+      "kind": "strength", "equipment": "barbell", "targets": ["arm.biceps"], "image": "Preacher_Curl",
+      "summary": "비스듬한 패드에 팔을 올리고 하는 컬입니다. 반동을 쓸 수 없어 이두에만 집중돼요.",
+      "steps": ["프리처 벤치에 앉아 팔 뒤쪽을 패드에 붙이고 바를 잡습니다.", "팔꿈치를 굽혀 바를 어깨 쪽으로 들어 올립니다.", "팔이 거의 펴질 때까지 천천히 내립니다."],
+      "mistakes": ["바닥까지 툭 떨어뜨리기", "엉덩이를 들어 몸으로 당기기"],
+      "easier": "가벼운 무게", "harder": "내릴 때 3초"
+    },
+    {
+      "key": "machine-preacher-curl", "name": "머신 프리처 컬", "aliases": ["머신 바이셉 컬", "바이셉 컬 머신", "머신 컬"],
+      "kind": "strength", "equipment": "machine", "targets": ["arm.biceps"], "image": "Machine_Preacher_Curls",
+      "summary": "패드에 팔을 올리고 손잡이를 당겨 올리는 이두 머신입니다. 자세가 쉽고 안정적이에요.",
+      "steps": ["팔꿈치가 머신 회전축과 맞도록 의자를 맞추고 팔을 패드에 올립니다.", "손잡이를 어깨 쪽으로 당겨 올립니다.", "천천히 내립니다."],
+      "mistakes": ["어깨로 들어 올리기", "끝까지 펴지 않기"],
+      "easier": "무게 낮추기", "harder": "한 팔씩 하기"
+    },
+    {
+      "key": "concentration-curl", "name": "컨센트레이션 컬", "aliases": ["콘센트레이션 컬", "컨센트레이션컬"],
+      "kind": "strength", "equipment": "dumbbell", "targets": ["arm.biceps"], "image": "Concentration_Curls",
+      "summary": "앉아서 팔꿈치를 허벅지 안쪽에 대고 덤벨을 드는 컬입니다. 이두 꼭대기를 쥐어짜듯 써요.",
+      "steps": ["벤치에 앉아 덤벨을 든 팔의 팔꿈치를 허벅지 안쪽에 댑니다.", "덤벨을 어깨 쪽으로 들어 올리고 1초 조입니다.", "천천히 내립니다."],
+      "mistakes": ["상체를 들며 당기기", "너무 빨리 하기"],
+      "easier": "가벼운 덤벨", "harder": "내릴 때 3초"
+    },
+    {
+      "key": "incline-dumbbell-curl", "name": "인클라인 덤벨 컬", "aliases": ["인클라인 컬", "인클라인 바이셉 컬"],
+      "kind": "strength", "equipment": "dumbbell", "targets": ["arm.biceps"], "image": "Incline_Dumbbell_Curl",
+      "summary": "뒤로 기운 벤치에 앉아 팔을 늘어뜨리고 하는 컬입니다. 이두를 길게 늘여서 단련해요.",
+      "steps": ["벤치를 45~60도로 세우고 기대 앉아 덤벨을 늘어뜨립니다.", "팔꿈치를 고정한 채 덤벨을 어깨 쪽으로 들어 올립니다.", "팔이 다 펴질 때까지 천천히 내립니다."],
+      "mistakes": ["팔꿈치가 앞으로 나오기", "무거운 무게로 어깨 앞이 당기기"],
+      "easier": "덤벨 컬", "harder": "무게 올리기"
+    },
+    {
+      "key": "cable-hammer-curl", "name": "케이블 해머 컬", "aliases": ["로프 해머 컬", "케이블 로프 해머 컬"],
+      "kind": "strength", "equipment": "cable", "targets": ["arm.biceps"], "image": "Cable_Hammer_Curls_-_Rope_Attachment",
+      "summary": "낮은 케이블에 로프를 달고 엄지가 위를 보게 당기는 컬입니다. 이두와 아래팔을 함께 키워요.",
+      "steps": ["케이블을 가장 낮게 두고 로프를 엄지가 위로 가게 잡습니다.", "팔꿈치를 고정한 채 로프를 가슴 쪽으로 당겨 올립니다.", "천천히 내립니다."],
+      "mistakes": ["팔꿈치가 앞뒤로 움직이기", "몸 흔들기"],
+      "easier": "덤벨 해머 컬", "harder": "무게 올리기"
+    },
+    {
+      "key": "triceps-pushdown", "name": "스트레이트 바 푸시다운", "aliases": ["푸시다운", "바 푸시다운", "일자 바 푸시다운", "트라이셉 푸시 다운"],
+      "kind": "strength", "equipment": "cable", "targets": ["arm.triceps"], "image": "Triceps_Pushdown",
+      "summary": "높은 케이블에 달린 일자 바를 아래로 미는 삼두 운동입니다.",
+      "steps": ["케이블을 높게 두고 바를 어깨너비보다 좁게 잡습니다.", "팔꿈치를 옆구리에 붙인 채 바를 허벅지 앞까지 밀어 내립니다.", "팔꿈치 높이까지 천천히 올려 보냅니다."],
+      "mistakes": ["팔꿈치가 벌어지거나 앞으로 나가기", "상체를 숙여 몸무게로 누르기"],
+      "easier": "무게 낮추기", "harder": "한 팔씩 하기"
+    },
+    {
+      "key": "v-bar-pushdown", "name": "V바 푸시다운", "aliases": ["브이바 푸시다운", "V-bar 푸시다운", "V 바 트라이셉스 푸시다운"],
+      "kind": "strength", "equipment": "cable", "targets": ["arm.triceps"], "image": "Triceps_Pushdown_-_V-Bar_Attachment",
+      "summary": "V자 손잡이로 하는 케이블 푸시다운입니다. 손목이 편해서 무게를 올리기 좋아요.",
+      "steps": ["케이블을 높게 두고 V바를 잡습니다.", "팔꿈치를 옆구리에 붙인 채 손잡이를 허벅지 앞까지 밀어 내립니다.", "천천히 올려 보냅니다."],
+      "mistakes": ["팔꿈치 벌어지기", "어깨로 누르기"],
+      "easier": "무게 낮추기", "harder": "무게 올리기"
+    },
+    {
+      "key": "overhead-cable-triceps-extension", "name": "케이블 오버헤드 트라이셉스 익스텐션", "aliases": ["오버헤드 트라이셉스 익스텐션", "케이블 오버헤드 익스텐션", "로프 오버헤드 익스텐션", "오버헤드 로프 익스텐션"],
+      "kind": "strength", "equipment": "cable", "targets": ["arm.triceps"], "image": "Cable_Rope_Overhead_Triceps_Extension",
+      "summary": "케이블 로프를 머리 뒤에서 앞으로 뻗는 삼두 운동입니다. 삼두의 긴 부분을 잘 늘여 줘요.",
+      "steps": ["케이블을 낮거나 중간에 두고 로프를 잡은 채 등을 돌려 머리 뒤로 가져옵니다.", "팔꿈치를 머리 옆에 고정하고 로프를 앞으로 쭉 뻗습니다.", "천천히 머리 뒤로 굽힙니다."],
+      "mistakes": ["팔꿈치가 옆으로 벌어지기", "허리를 젖히기"],
+      "easier": "덤벨 트라이셉스 익스텐션", "harder": "무게 올리기"
+    },
+    {
+      "key": "skull-crusher", "name": "라잉 트라이셉스 익스텐션", "aliases": ["스컬 크러셔", "스컬크러셔", "라잉 트라이셉 익스텐션", "이지바 라잉 익스텐션"],
+      "kind": "strength", "equipment": "barbell", "targets": ["arm.triceps"], "image": "Lying_Triceps_Press",
+      "summary": "누워서 이지바를 이마 쪽으로 내렸다 펴는 삼두 운동입니다. '스컬 크러셔'라고도 불러요.",
+      "steps": ["벤치에 누워 이지바를 좁게 잡고 팔을 가슴 위로 폅니다.", "팔꿈치를 고정한 채 바를 이마 위쪽으로 천천히 내립니다.", "팔꿈치를 펴서 바를 다시 올립니다."],
+      "mistakes": ["팔꿈치가 벌어지기", "무거운 무게로 머리 가까이 떨어뜨리기"],
+      "easier": "덤벨로 하기", "harder": "무게 올리기"
+    },
+    {
+      "key": "close-grip-bench-press", "name": "클로즈 그립 벤치 프레스", "aliases": ["클로즈그립 벤치프레스", "좁게 벤치 프레스", "내로우 그립 벤치 프레스"],
+      "kind": "strength", "equipment": "barbell", "targets": ["arm.triceps", "chest.mid_chest"], "image": "Close-Grip_Barbell_Bench_Press",
+      "summary": "바벨을 어깨너비로 좁게 잡고 하는 벤치 프레스입니다. 삼두를 무겁게 키워요.",
+      "steps": ["벤치에 누워 바벨을 어깨너비로 잡습니다.", "팔꿈치를 몸에 붙인 채 바를 명치 쪽으로 내립니다.", "삼두로 밀어 올립니다."],
+      "mistakes": ["손을 너무 좁게 잡아 손목이 아프기", "팔꿈치가 옆으로 벌어지기"],
+      "easier": "다이아몬드 푸시업", "harder": "무게 올리기"
+    },
+    {
+      "key": "dumbbell-kickback", "name": "덤벨 킥백", "aliases": ["트라이셉스 킥백", "덤벨 트라이셉스 킥백", "킥백"],
+      "kind": "strength", "equipment": "dumbbell", "targets": ["arm.triceps"], "image": "Tricep_Dumbbell_Kickback",
+      "summary": "상체를 숙이고 덤벨을 뒤로 뻗는 삼두 운동입니다. 가벼운 무게로 삼두를 조여요.",
+      "steps": ["한 손과 무릎을 벤치에 대고 상체를 숙여 덤벨을 든 팔의 팔꿈치를 옆구리에 붙입니다.", "팔꿈치를 고정한 채 덤벨을 뒤로 쭉 뻗습니다.", "천천히 굽힙니다."],
+      "mistakes": ["팔꿈치가 내려가기", "휘둘러서 반동 쓰기"],
+      "easier": "가벼운 덤벨", "harder": "케이블로 하기"
+    },
+    {
+      "key": "bench-dips", "name": "벤치 딥스", "aliases": ["의자 딥스", "벤치딥스"],
+      "kind": "strength", "equipment": "bodyweight", "targets": ["arm.triceps"], "image": "Bench_Dips",
+      "summary": "의자나 벤치 끝을 뒤로 짚고 몸을 내렸다 올리는 삼두 운동입니다. 집에서도 할 수 있어요.",
+      "steps": ["의자 끝을 뒤로 짚고 다리를 앞으로 뻗어 엉덩이를 의자 앞에 띄웁니다.", "팔꿈치를 뒤로 굽혀 엉덩이를 내립니다.", "손바닥으로 밀어 올라옵니다."],
+      "mistakes": ["너무 깊이 내려가 어깨 앞이 아프기", "팔꿈치가 옆으로 벌어지기"],
+      "easier": "무릎 굽히기", "harder": "발을 다른 의자에 올리기"
+    },
+    {
+      "key": "diamond-push-up", "name": "다이아몬드 푸시업", "aliases": ["클로즈 푸시업", "좁은 푸시업", "다이아몬드 푸쉬업", "내로우 푸시업"],
+      "kind": "strength", "equipment": "bodyweight", "targets": ["arm.triceps", "chest.mid_chest"], "image": "Push-Ups_-_Close_Triceps_Position",
+      "summary": "손을 모아 짚고 하는 푸시업입니다. 기구 없이 삼두를 키워요.",
+      "steps": ["엄지와 검지로 다이아몬드 모양을 만들어 가슴 아래를 짚습니다.", "팔꿈치를 몸에 붙인 채 가슴을 손 쪽으로 내립니다.", "바닥을 밀어 올라옵니다."],
+      "mistakes": ["팔꿈치가 옆으로 벌어지기", "허리 처지기"],
+      "easier": "무릎 대고 하기", "harder": "발 올리기"
+    },
+    {
+      "key": "machine-triceps-extension", "name": "머신 트라이셉스 익스텐션", "aliases": ["트라이셉스 머신", "딥스 머신", "시티드 딥스 머신", "머신 트라이셉 익스텐션"],
+      "kind": "strength", "equipment": "machine", "targets": ["arm.triceps"], "image": "Machine_Triceps_Extension",
+      "summary": "앉아서 손잡이를 아래로 누르거나 펴는 삼두 머신입니다. 혼자서도 무겁게 안전하게 할 수 있어요.",
+      "steps": ["의자를 맞추고 손잡이를 잡습니다.", "팔꿈치를 고정한 채 손잡이를 끝까지 밀어 폅니다.", "천천히 돌아옵니다."],
+      "mistakes": ["어깨로 누르기", "반만 펴기"],
+      "easier": "무게 낮추기", "harder": "무게 올리기"
+    },
+    {
+      "key": "reverse-barbell-curl", "name": "리버스 바벨 컬", "aliases": ["리버스 컬", "리버스 이지바 컬"],
+      "kind": "strength", "equipment": "barbell", "targets": ["arm.biceps"], "image": "Reverse_Barbell_Curl",
+      "summary": "바벨을 손등이 위로 오게 잡고 드는 컬입니다. 아래팔과 팔꿈치 주변 근육을 키워요.",
+      "steps": ["바벨을 어깨너비로 손등이 앞을 보게 잡습니다.", "팔꿈치를 고정한 채 바를 가슴 앞까지 들어 올립니다.", "천천히 내립니다."],
+      "mistakes": ["손목이 꺾이기", "반동 쓰기"],
+      "easier": "가벼운 무게", "harder": "무게 올리기"
+    },
+    {
+      "key": "romanian-deadlift", "name": "루마니안 데드리프트", "aliases": ["RDL", "루마니안 데드", "바벨 루마니안 데드리프트", "루마니안데드리프트"],
+      "kind": "strength", "equipment": "barbell", "targets": ["legs.hamstrings", "legs.glutes"], "image": "Romanian_Deadlift",
+      "summary": "선 자세에서 바벨을 허벅지를 따라 내렸다 올리는 운동입니다. 뒷허벅지와 엉덩이를 집중해서 키워요.",
+      "steps": ["바벨을 들고 서서 무릎을 살짝만 굽힙니다.", "엉덩이를 뒤로 빼며 바벨을 허벅지를 따라 무릎 아래까지 내립니다.", "뒷허벅지가 당기면 엉덩이를 앞으로 밀며 일어섭니다."],
+      "mistakes": ["허리가 말리기", "무릎을 많이 굽혀 스쿼트처럼 되기"],
+      "easier": "덤벨 루마니안 데드리프트", "harder": "무게 올리기"
+    },
+    {
+      "key": "dumbbell-romanian-deadlift", "name": "덤벨 루마니안 데드리프트", "aliases": ["덤벨 RDL", "덤벨 루마니안", "스티프 레그 덤벨 데드리프트", "덤벨 스티프 데드리프트"],
+      "kind": "strength", "equipment": "dumbbell", "targets": ["legs.hamstrings", "legs.glutes"], "image": "Stiff-Legged_Dumbbell_Deadlift",
+      "summary": "덤벨을 들고 하는 루마니안 데드리프트입니다. 집이나 헬스장 어디서든 뒷허벅지를 키울 수 있어요.",
+      "steps": ["덤벨을 양손에 들고 무릎을 살짝 굽혀 섭니다.", "엉덩이를 뒤로 빼며 덤벨을 다리를 따라 정강이 중간까지 내립니다.", "엉덩이를 앞으로 밀며 일어섭니다."],
+      "mistakes": ["허리 말리기", "덤벨이 다리에서 멀어지기"],
+      "easier": "가벼운 덤벨", "harder": "싱글 레그 데드리프트"
+    },
+    {
+      "key": "sumo-deadlift", "name": "스모 데드리프트", "aliases": ["스모 데드", "스모데드리프트"],
+      "kind": "strength", "equipment": "barbell", "targets": ["legs.glutes", "legs.quads", "back.lower_back"], "image": "Sumo_Deadlift",
+      "summary": "다리를 넓게 벌리고 안쪽으로 바를 잡는 데드리프트입니다. 엉덩이와 허벅지를 더 쓰고 허리 부담이 조금 적어요.",
+      "steps": ["다리를 어깨너비의 두 배쯤 벌리고 발끝을 바깥으로 돌려 바를 안쪽에서 잡습니다.", "가슴을 펴고 무릎을 바깥으로 밀며 일어섭니다.", "엉덩이를 뒤로 빼며 바를 내립니다."],
+      "mistakes": ["무릎이 안으로 모이기", "엉덩이가 먼저 들리기"],
+      "easier": "무게 낮추기, 케틀벨 스모 데드리프트", "harder": "무게 올리기"
+    },
+    {
+      "key": "front-squat", "name": "프론트 스쿼트", "aliases": ["프런트 스쿼트", "바벨 프론트 스쿼트"],
+      "kind": "strength", "equipment": "barbell", "targets": ["legs.quads", "core.abs"], "image": "Front_Squat_Clean_Grip",
+      "summary": "바벨을 어깨 앞에 얹고 하는 스쿼트입니다. 앞허벅지를 더 쓰고 상체를 세우기 쉬워요.",
+      "steps": ["바벨을 쇄골과 어깨 앞에 얹고 팔꿈치를 앞으로 높이 듭니다.", "상체를 세운 채 허벅지가 바닥과 나란해질 때까지 앉습니다.", "발바닥 전체로 밀며 일어섭니다."],
+      "mistakes": ["팔꿈치가 내려가 바가 굴러떨어지기", "뒤꿈치 들리기"],
+      "easier": "고블릿 스쿼트", "harder": "무게 올리기"
+    },
+    {
+      "key": "smith-squat", "name": "스미스 머신 스쿼트", "aliases": ["스미스 스쿼트"],
+      "kind": "strength", "equipment": "smith", "targets": ["legs.quads", "legs.glutes"], "image": "Smith_Machine_Squat",
+      "summary": "스미스 머신 바를 어깨에 지고 하는 스쿼트입니다. 균형 잡기가 쉬워 하체에만 집중할 수 있어요.",
+      "steps": ["바를 어깨에 얹고 발을 몸보다 조금 앞에 둡니다.", "허벅지가 바닥과 나란해질 때까지 앉습니다.", "발바닥으로 밀며 일어섭니다."],
+      "mistakes": ["무릎이 안으로 모이기", "발을 너무 뒤에 둬 무릎에 무리 주기"],
+      "easier": "맨몸 스쿼트", "harder": "바벨 스쿼트"
+    },
+    {
+      "key": "seated-leg-curl", "name": "시티드 레그 컬", "aliases": ["앉아서 레그 컬", "시티드 레그컬", "레그 컬 머신"],
+      "kind": "strength", "equipment": "machine", "targets": ["legs.hamstrings"], "image": "Seated_Leg_Curl",
+      "summary": "앉아서 다리 아래 패드를 뒤로 눌러 무릎을 굽히는 머신입니다. 뒷허벅지를 단련해요.",
+      "steps": ["무릎이 머신 회전축과 맞게 앉고 허벅지 패드를 내려 고정합니다.", "발목 뒤 패드를 아래 뒤로 눌러 무릎을 굽힙니다.", "천천히 돌아옵니다."],
+      "mistakes": ["엉덩이가 들리기", "반동으로 튕기기"],
+      "easier": "무게 낮추기", "harder": "한 다리씩"
+    },
+    {
+      "key": "hip-abduction", "name": "힙 어브덕션", "aliases": ["힙어브덕션", "어브덕션 머신", "아웃타이 머신", "힙 어브덕터"],
+      "kind": "strength", "equipment": "machine", "targets": ["legs.glutes"], "image": "Thigh_Abductor",
+      "summary": "앉아서 무릎 바깥 패드를 밀어 다리를 벌리는 머신입니다. 엉덩이 옆쪽(중둔근)을 키워요.",
+      "steps": ["머신에 앉아 무릎 바깥쪽을 패드에 댑니다.", "다리를 바깥으로 최대한 벌리고 1초 멈춥니다.", "천천히 모읍니다."],
+      "mistakes": ["반동으로 튕기기", "등을 등받이에서 떼기"],
+      "easier": "무게 낮추기", "harder": "상체를 살짝 숙여서 하기"
+    },
+    {
+      "key": "seated-calf-raise", "name": "시티드 카프 레이즈", "aliases": ["앉아서 카프 레이즈", "시티드 카프레이즈"],
+      "kind": "strength", "equipment": "machine", "targets": ["legs.calves"], "image": "Seated_Calf_Raise",
+      "summary": "앉아서 무릎 위 패드를 발끝으로 밀어 올리는 종아리 머신입니다.",
+      "steps": ["발 앞쪽을 발판에 올리고 무릎 위에 패드를 맞춥니다.", "뒤꿈치를 최대한 들어 올리고 1초 멈춥니다.", "뒤꿈치를 발판 아래로 충분히 내립니다."],
+      "mistakes": ["반만 움직이기", "튕기듯 빠르게 하기"],
+      "easier": "무게 낮추기", "harder": "내릴 때 3초"
+    },
+    {
+      "key": "standing-calf-raise", "name": "스탠딩 카프 레이즈 머신", "aliases": ["카프 레이즈 머신", "머신 카프 레이즈"],
+      "kind": "strength", "equipment": "machine", "targets": ["legs.calves"], "image": "Standing_Calf_Raises",
+      "summary": "서서 어깨 패드를 지고 발끝으로 올라서는 종아리 머신입니다.",
+      "steps": ["어깨를 패드 아래에 넣고 발 앞쪽을 발판에 올립니다.", "무릎을 편 채 뒤꿈치를 최대한 들어 올립니다.", "뒤꿈치를 충분히 내립니다."],
+      "mistakes": ["무릎을 굽혀 반동 쓰기", "범위를 짧게 하기"],
+      "easier": "한 발 카프 레이즈(맨몸)", "harder": "무게 올리기"
+    },
+    {
+      "key": "leg-press-calf-raise", "name": "레그 프레스 카프 레이즈", "aliases": ["레그프레스 카프 레이즈", "카프 프레스"],
+      "kind": "strength", "equipment": "machine", "targets": ["legs.calves"], "image": "Calf_Press_On_The_Leg_Press_Machine",
+      "summary": "레그 프레스 발판 아래쪽에 발끝을 대고 밀어내는 종아리 운동입니다.",
+      "steps": ["레그 프레스에 앉아 발 앞쪽만 발판 아래 끝에 댑니다.", "무릎을 편 채 발끝으로 발판을 밀어냅니다.", "천천히 돌아옵니다."],
+      "mistakes": ["안전 손잡이를 풀어 두지 않은 채 무게 바꾸기", "발이 미끄러지기"],
+      "easier": "무게 낮추기", "harder": "한 발씩"
+    },
+    {
+      "key": "dumbbell-lunge", "name": "덤벨 런지", "aliases": ["덤벨 런지스", "덤벨 워킹 런지", "덤벨 포워드 런지"],
+      "kind": "strength", "equipment": "dumbbell", "targets": ["legs.quads", "legs.glutes"], "image": "Dumbbell_Lunges",
+      "summary": "덤벨을 들고 앞으로 크게 내디뎌 앉는 운동입니다. 허벅지와 엉덩이, 균형감각을 키워요.",
+      "steps": ["덤벨을 양손에 들고 섭니다.", "한 발을 앞으로 크게 내디뎌 뒷무릎이 바닥 가까이 갈 때까지 내려갑니다.", "앞발로 밀어 돌아오고 다리를 바꿉니다."],
+      "mistakes": ["앞무릎이 안으로 모이기", "보폭이 너무 좁기"],
+      "easier": "맨몸 런지", "harder": "불가리안 스플릿 스쿼트"
+    },
+    {
+      "key": "barbell-lunge", "name": "바벨 런지", "aliases": ["바벨 런지스"],
+      "kind": "strength", "equipment": "barbell", "targets": ["legs.quads", "legs.glutes"], "image": "Barbell_Lunge",
+      "summary": "바벨을 어깨에 지고 하는 런지입니다. 무게를 많이 올려 하체를 키울 수 있어요.",
+      "steps": ["바벨을 스쿼트처럼 어깨에 지고 섭니다.", "한 발을 앞으로 내디뎌 뒷무릎이 바닥 가까이 갈 때까지 내려갑니다.", "앞발로 밀어 돌아옵니다."],
+      "mistakes": ["상체가 앞으로 무너지기", "균형을 잃을 만큼 무겁게 하기"],
+      "easier": "덤벨 런지", "harder": "무게 올리기"
+    },
+    {
+      "key": "dumbbell-step-up", "name": "덤벨 스텝업", "aliases": ["스텝업", "박스 스텝업", "스텝 업"],
+      "kind": "strength", "equipment": "dumbbell", "targets": ["legs.quads", "legs.glutes"], "image": "Dumbbell_Step_Ups",
+      "summary": "덤벨을 들고 벤치나 박스 위로 한 발씩 올라서는 운동입니다. 엉덩이와 허벅지를 키워요.",
+      "steps": ["덤벨을 들고 무릎 높이의 박스 앞에 섭니다.", "한 발을 박스에 올리고 그 발로 밀어 올라섭니다.", "천천히 내려오고 다리를 바꿉니다."],
+      "mistakes": ["뒷발로 바닥을 차서 올라가기", "박스가 너무 높기"],
+      "easier": "맨몸으로, 낮은 계단", "harder": "무게 올리기"
+    },
+    {
+      "key": "glute-bridge", "name": "글루트 브릿지", "aliases": ["힙 브릿지", "브릿지", "글루트브릿지", "엉덩이 들기"],
+      "kind": "strength", "equipment": "bodyweight", "targets": ["legs.glutes", "legs.hamstrings"], "image": "Butt_Lift_Bridge",
+      "summary": "누워서 무릎을 세우고 엉덩이를 들어 올리는 운동입니다. 기구 없이 엉덩이를 깨워요.",
+      "steps": ["바닥에 누워 무릎을 세우고 발을 엉덩이 가까이 둡니다.", "발뒤꿈치로 밀며 엉덩이를 무릎부터 어깨까지 일자가 되게 들어 올립니다.", "엉덩이를 조이고 1초 버틴 뒤 내립니다."],
+      "mistakes": ["허리를 꺾어 들어 올리기", "발이 너무 멀어 뒷허벅지만 쓰기"],
+      "easier": "범위 줄이기", "harder": "한 발 글루트 브릿지"
+    },
+    {
+      "key": "single-leg-glute-bridge", "name": "한 발 글루트 브릿지", "aliases": ["싱글 레그 글루트 브릿지", "싱글 레그 브릿지", "원 레그 브릿지"],
+      "kind": "strength", "equipment": "bodyweight", "targets": ["legs.glutes", "legs.hamstrings"], "image": "Single_Leg_Glute_Bridge",
+      "summary": "한쪽 다리만으로 엉덩이를 들어 올리는 브릿지입니다. 좌우 엉덩이 힘을 따로 키워요.",
+      "steps": ["누워서 한쪽 무릎을 세우고 반대 다리는 위로 뻗습니다.", "세운 발로 밀어 엉덩이를 들어 올립니다.", "천천히 내리고 다리를 바꿉니다."],
+      "mistakes": ["골반이 한쪽으로 기울기", "허리로 들기"],
+      "easier": "글루트 브릿지", "harder": "발을 소파에 올리기"
+    },
+    {
+      "key": "barbell-glute-bridge", "name": "바벨 글루트 브릿지", "aliases": ["바벨 브릿지", "바벨 힙 브릿지"],
+      "kind": "strength", "equipment": "barbell", "targets": ["legs.glutes"], "image": "Barbell_Glute_Bridge",
+      "summary": "바닥에 누워 골반 위 바벨을 엉덩이로 들어 올리는 운동입니다. 힙 쓰러스트보다 준비가 간단해요.",
+      "steps": ["바닥에 누워 골반 위에 패드를 감은 바벨을 올리고 무릎을 세웁니다.", "발뒤꿈치로 밀어 엉덩이를 들어 올리고 1초 조입니다.", "천천히 내립니다."],
+      "mistakes": ["허리를 꺾기", "바가 굴러가게 두기"],
+      "easier": "글루트 브릿지", "harder": "바벨 힙 쓰러스트"
+    },
+    {
+      "key": "cable-pull-through", "name": "케이블 풀 스루", "aliases": ["풀 스루", "풀스루", "케이블 풀스루"],
+      "kind": "strength", "equipment": "cable", "targets": ["legs.glutes", "legs.hamstrings"], "image": "Pull_Through",
+      "summary": "다리 사이로 케이블 로프를 잡고 엉덩이를 앞으로 밀며 일어서는 운동입니다. 허리 부담 없이 엉덩이를 키워요.",
+      "steps": ["낮은 케이블에 로프를 달고 등지고 서서 다리 사이로 로프를 잡습니다.", "엉덩이를 뒤로 빼며 상체를 숙입니다.", "엉덩이를 앞으로 밀며 일어서고 끝에서 조입니다."],
+      "mistakes": ["팔로 당기기", "스쿼트처럼 무릎을 많이 굽히기"],
+      "easier": "무게 낮추기", "harder": "루마니안 데드리프트"
+    },
+    {
+      "key": "cable-glute-kickback", "name": "케이블 킥백", "aliases": ["케이블 힙 킥백", "케이블 글루트 킥백", "힙 킥백"],
+      "kind": "strength", "equipment": "cable", "targets": ["legs.glutes"], "image": null,
+      "summary": "발목에 케이블을 걸고 다리를 뒤로 차올리는 운동입니다. 엉덩이를 집중해서 조여요.",
+      "steps": ["낮은 케이블에 발목 스트랩을 걸고 머신을 잡고 섭니다.", "무릎을 살짝 굽힌 채 다리를 뒤로 차올리고 엉덩이를 조입니다.", "천천히 돌아옵니다."],
+      "mistakes": ["허리를 꺾어 높이 차기", "몸통이 흔들리기"],
+      "easier": "덩키 킥", "harder": "무게 올리기"
+    },
+    {
+      "key": "donkey-kick", "name": "덩키 킥", "aliases": ["동키 킥", "덩키킥", "글루트 킥백"],
+      "kind": "strength", "equipment": "bodyweight", "targets": ["legs.glutes"], "image": "Glute_Kickback",
+      "summary": "네발 자세에서 한쪽 다리를 뒤로 차올리는 운동입니다. 집에서 엉덩이를 조이기 좋아요.",
+      "steps": ["손과 무릎을 바닥에 대고 네발 자세를 만듭니다.", "무릎을 굽힌 채 한쪽 발바닥을 천장 쪽으로 밀어 올립니다.", "천천히 내리고 다리를 바꿉니다."],
+      "mistakes": ["허리를 꺾기", "너무 빠르게 차기"],
+      "easier": "범위 줄이기", "harder": "발목 모래주머니"
+    },
+    {
+      "key": "kettlebell-swing", "name": "케틀벨 스윙", "aliases": ["케틀벨스윙", "투 핸드 케틀벨 스윙", "원 암 케틀벨 스윙"],
+      "kind": "strength", "equipment": "kettlebell", "targets": ["legs.glutes", "legs.hamstrings", "back.lower_back"], "image": "One-Arm_Kettlebell_Swings",
+      "summary": "엉덩이를 뒤로 뺐다 힘차게 밀며 케틀벨을 앞으로 흔드는 운동입니다. 엉덩이·뒷허벅지와 심폐를 함께 써요.",
+      "steps": ["다리를 어깨너비보다 넓게 서서 케틀벨을 양손으로 잡습니다.", "엉덩이를 뒤로 빼며 케틀벨을 다리 사이로 보냅니다.", "엉덩이를 힘차게 앞으로 밀어 케틀벨을 가슴 높이까지 띄웁니다."],
+      "mistakes": ["팔로 들어 올리기", "스쿼트처럼 앉았다 일어나기", "허리 말리기"],
+      "easier": "가벼운 케틀벨", "harder": "한 손 스윙"
+    },
+    {
+      "key": "single-leg-deadlift", "name": "싱글 레그 데드리프트", "aliases": ["원 레그 데드리프트", "싱글 레그 RDL", "케틀벨 싱글 레그 데드리프트", "한 발 데드리프트"],
+      "kind": "strength", "equipment": "kettlebell", "targets": ["legs.hamstrings", "legs.glutes"], "image": "Kettlebell_One-Legged_Deadlift",
+      "summary": "한 발로 서서 상체를 숙였다 세우는 데드리프트입니다. 뒷허벅지·엉덩이와 균형감각을 키워요. 덤벨로도 해요.",
+      "steps": ["케틀벨(또는 덤벨)을 한 손에 들고 반대 발로 섭니다.", "들고 있지 않은 쪽 다리를 뒤로 뻗으며 상체를 숙입니다.", "엉덩이를 조이며 일어섭니다."],
+      "mistakes": ["골반이 옆으로 열리기", "허리 말리기"],
+      "easier": "맨몸으로, 벽 짚고", "harder": "무게 올리기"
+    },
+    {
+      "key": "jump-squat", "name": "점프 스쿼트", "aliases": ["스쿼트 점프", "점핑 스쿼트"],
+      "kind": "strength", "equipment": "bodyweight", "targets": ["legs.quads", "legs.glutes"], "image": "Freehand_Jump_Squat",
+      "summary": "스쿼트로 앉았다가 위로 뛰어오르는 운동입니다. 하체 힘과 심박을 함께 올려요(층간소음 주의).",
+      "steps": ["다리를 어깨너비로 서서 스쿼트 자세로 앉습니다.", "바닥을 힘차게 밀어 위로 뛰어오릅니다.", "무릎을 굽혀 부드럽게 착지하고 바로 다음 동작을 합니다."],
+      "mistakes": ["무릎을 편 채 쿵 착지하기", "무릎이 안으로 모이기"],
+      "easier": "맨몸 스쿼트", "harder": "연속 빠르게"
+    },
+    {
+      "key": "wall-sit", "name": "월 싯", "aliases": ["월싯", "벽 스쿼트", "벽에 기대 앉기"],
+      "kind": "strength", "equipment": "bodyweight", "targets": ["legs.quads"], "image": null,
+      "summary": "벽에 등을 대고 의자에 앉은 자세로 버티는 운동입니다. 소리 없이 앞허벅지를 단련해요.",
+      "steps": ["벽에 등을 대고 발을 벽에서 한 걸음 앞에 둡니다.", "허벅지가 바닥과 나란해질 때까지 미끄러져 내려갑니다.", "정한 시간 동안 버팁니다."],
+      "mistakes": ["무릎이 발끝보다 많이 나가기", "손으로 허벅지 누르기"],
+      "easier": "덜 앉기", "harder": "한 발 들기"
+    },
+    {
+      "key": "crunch", "name": "크런치", "aliases": ["크런치 운동", "복근 크런치", "크런치스"],
+      "kind": "strength", "equipment": "bodyweight", "targets": ["core.abs"], "image": "Crunches",
+      "summary": "누워서 어깨를 바닥에서 살짝 들어 배를 조이는 기본 복근 운동입니다.",
+      "steps": ["누워서 무릎을 세우고 손은 귀 옆이나 가슴 위에 둡니다.", "배를 조이며 어깨를 바닥에서 들어 올립니다.", "천천히 내립니다."],
+      "mistakes": ["손으로 목을 당기기", "끝까지 일어나 허리를 쓰기"],
+      "easier": "범위 줄이기", "harder": "케이블 크런치"
+    },
+    {
+      "key": "cable-crunch", "name": "케이블 크런치", "aliases": ["로프 크런치", "니링 케이블 크런치", "케이블크런치"],
+      "kind": "strength", "equipment": "cable", "targets": ["core.abs"], "image": "Cable_Crunch",
+      "summary": "무릎 꿇고 앉아 머리 뒤 로프를 잡고 배를 말아 내리는 복근 운동입니다. 무게를 더할 수 있어요.",
+      "steps": ["높은 케이블에 로프를 달고 무릎 꿇고 앉아 로프를 머리 옆에 붙입니다.", "엉덩이는 고정한 채 배를 말며 팔꿈치를 무릎 쪽으로 내립니다.", "천천히 펴며 돌아옵니다."],
+      "mistakes": ["엉덩이를 앉았다 일어나며 당기기", "팔로 당기기"],
+      "easier": "무게 낮추기", "harder": "무게 올리기"
+    },
+    {
+      "key": "ab-crunch-machine", "name": "앱 크런치 머신", "aliases": ["복근 머신", "크런치 머신", "애브 크런치 머신", "앱도미널 머신"],
+      "kind": "strength", "equipment": "machine", "targets": ["core.abs"], "image": "Ab_Crunch_Machine",
+      "summary": "앉아서 손잡이나 패드를 앞으로 말아 내리는 복근 머신입니다.",
+      "steps": ["의자를 맞추고 손잡이를 잡거나 패드를 가슴에 댑니다.", "배를 말며 상체를 앞으로 숙입니다.", "천천히 돌아옵니다."],
+      "mistakes": ["팔로 당기기", "반동으로 튕기기"],
+      "easier": "무게 낮추기", "harder": "무게 올리기"
+    },
+    {
+      "key": "ab-wheel", "name": "복근 롤러", "aliases": ["AB 슬라이드", "에이비 슬라이드", "앱 롤러", "앱 휠", "복근 바퀴"],
+      "kind": "strength", "equipment": "ab_wheel", "targets": ["core.abs"], "image": "Ab_Roller",
+      "summary": "바퀴 달린 손잡이를 앞으로 굴렸다 당겨 오는 복근 운동입니다. 강도가 높아요.",
+      "steps": ["무릎을 바닥에 대고 롤러를 어깨 아래에 둡니다.", "배에 힘을 준 채 롤러를 앞으로 천천히 굴립니다.", "허리가 처지기 전에 배 힘으로 당겨 돌아옵니다."],
+      "mistakes": ["허리가 아래로 처지기", "너무 멀리 나가기"],
+      "easier": "짧게 굴리기, 벽 앞에서 하기", "harder": "서서 하기"
+    },
+    {
+      "key": "lying-leg-raise", "name": "라잉 레그 레이즈", "aliases": ["레그 레이즈", "누워서 다리 들기", "레그레이즈", "라잉 레그레이즈"],
+      "kind": "strength", "equipment": "bodyweight", "targets": ["core.abs"], "image": "Flat_Bench_Lying_Leg_Raise",
+      "summary": "누워서 다리를 펴고 들어 올렸다 내리는 운동입니다. 아랫배를 단련해요.",
+      "steps": ["바닥이나 벤치에 누워 손으로 옆을 잡습니다.", "다리를 편 채 천장 쪽으로 들어 올립니다.", "허리가 뜨지 않게 천천히 내립니다."],
+      "mistakes": ["허리가 바닥에서 뜨기", "다리를 툭 떨어뜨리기"],
+      "easier": "무릎 굽혀서", "harder": "행잉 레그 레이즈"
+    },
+    {
+      "key": "reverse-crunch", "name": "리버스 크런치", "aliases": ["리버스크런치", "역크런치"],
+      "kind": "strength", "equipment": "bodyweight", "targets": ["core.abs"], "image": "Reverse_Crunch",
+      "summary": "누워서 무릎을 가슴 쪽으로 당기며 엉덩이를 살짝 드는 운동입니다. 아랫배에 좋아요.",
+      "steps": ["누워서 무릎을 90도로 굽혀 들어 올립니다.", "배를 말며 무릎을 가슴 쪽으로 당겨 엉덩이를 살짝 들어 올립니다.", "천천히 돌아옵니다."],
+      "mistakes": ["다리를 휘둘러 반동 쓰기", "목에 힘주기"],
+      "easier": "범위 줄이기", "harder": "라잉 레그 레이즈"
+    },
+    {
+      "key": "bicycle-crunch", "name": "바이시클 크런치", "aliases": ["자전거 크런치", "바이시클", "에어 바이크"],
+      "kind": "strength", "equipment": "bodyweight", "targets": ["core.obliques", "core.abs"], "image": "Air_Bike",
+      "summary": "누워서 자전거 타듯 다리를 움직이며 팔꿈치와 반대 무릎을 모으는 운동입니다. 옆구리와 복근을 함께 써요.",
+      "steps": ["누워서 손을 귀 옆에 두고 어깨와 다리를 살짝 듭니다.", "오른쪽 팔꿈치와 왼쪽 무릎을 모으며 오른 다리는 뻗습니다.", "반대쪽으로 번갈아 합니다."],
+      "mistakes": ["목을 손으로 당기기", "너무 빨리 하기"],
+      "easier": "천천히, 범위 줄이기", "harder": "모은 자세에서 1초 멈추기"
+    },
+    {
+      "key": "dead-bug", "name": "데드버그", "aliases": ["데드 버그", "데드벅"],
+      "kind": "strength", "equipment": "bodyweight", "targets": ["core.abs"], "image": "Dead_Bug",
+      "summary": "누워서 반대쪽 팔과 다리를 번갈아 뻗는 운동입니다. 허리를 보호하는 코어 힘을 길러요.",
+      "steps": ["누워서 팔은 천장으로, 무릎은 90도로 들어 올립니다.", "허리를 바닥에 붙인 채 오른팔과 왼다리를 천천히 뻗습니다.", "돌아와서 반대쪽을 합니다."],
+      "mistakes": ["허리가 바닥에서 뜨기", "숨 참기"],
+      "easier": "다리만 뻗기", "harder": "천천히, 손에 가벼운 덤벨"
+    },
+    {
+      "key": "mountain-climber", "name": "마운틴 클라이머", "aliases": ["마운틴클라이머", "마운틴 클라이머스"],
+      "kind": "strength", "equipment": "bodyweight", "targets": ["core.abs", "legs.quads"], "image": "Mountain_Climbers",
+      "summary": "푸시업 자세에서 무릎을 가슴 쪽으로 번갈아 당기는 운동입니다. 복근과 심박을 함께 올려요.",
+      "steps": ["팔을 편 푸시업 자세를 만듭니다.", "한쪽 무릎을 가슴 쪽으로 당겼다 돌려놓습니다.", "다리를 빠르게 번갈아 합니다."],
+      "mistakes": ["엉덩이를 높이 들기", "어깨가 손보다 뒤로 빠지기"],
+      "easier": "천천히 걸어가듯", "harder": "속도 올리기"
+    },
+    {
+      "key": "sit-up", "name": "싯업", "aliases": ["윗몸일으키기", "싯 업", "씻업"],
+      "kind": "strength", "equipment": "bodyweight", "targets": ["core.abs"], "image": "Sit-Up",
+      "summary": "누운 자세에서 상체를 끝까지 일으키는 복근 운동입니다.",
+      "steps": ["누워서 무릎을 세우고 발을 고정합니다.", "배를 말며 상체를 무릎 쪽으로 일으킵니다.", "천천히 내려갑니다."],
+      "mistakes": ["손으로 목을 당기기", "반동으로 튀어 오르기"],
+      "easier": "크런치", "harder": "디클라인 벤치에서"
+    },
+    {
+      "key": "cable-woodchop", "name": "케이블 우드찹", "aliases": ["우드찹", "우드 찹", "케이블 우드 찹"],
+      "kind": "strength", "equipment": "cable", "targets": ["core.obliques"], "image": "Standing_Cable_Wood_Chop",
+      "summary": "케이블을 대각선으로 당기며 몸통을 비트는 운동입니다. 옆구리를 단련해요.",
+      "steps": ["케이블을 높게 두고 옆으로 서서 양손으로 손잡이를 잡습니다.", "팔을 편 채 몸통을 돌리며 반대쪽 무릎 쪽으로 대각선으로 당겨 내립니다.", "천천히 돌아오고 반대쪽도 합니다."],
+      "mistakes": ["팔로만 당기기", "허리만 비틀고 골반이 고정되지 않기"],
+      "easier": "무게 낮추기", "harder": "낮은 곳에서 위로(리버스 우드찹)"
+    },
+    {
+      "key": "pallof-press", "name": "팔로프 프레스", "aliases": ["팔로프프레스", "팰로프 프레스"],
+      "kind": "strength", "equipment": "cable", "targets": ["core.obliques", "core.abs"], "image": "Pallof_Press",
+      "summary": "옆에서 당기는 케이블을 버티며 손을 앞으로 미는 운동입니다. 몸통이 돌아가지 않게 버티는 힘을 길러요.",
+      "steps": ["케이블을 가슴 높이에 두고 옆으로 서서 손잡이를 가슴 앞에 잡습니다.", "몸통이 돌아가지 않게 버티며 손을 앞으로 쭉 밉니다.", "2초 버틴 뒤 가슴으로 돌아옵니다."],
+      "mistakes": ["몸통이 케이블 쪽으로 돌아가기", "허리 젖히기"],
+      "easier": "무게 낮추기", "harder": "멀리 서기"
+    },
+    {
+      "key": "flutter-kick", "name": "플러터 킥", "aliases": ["플러터킥", "수영 발차기"],
+      "kind": "strength", "equipment": "bodyweight", "targets": ["core.abs"], "image": "Flutter_Kicks",
+      "summary": "누워서 다리를 조금 든 채 위아래로 번갈아 차는 운동입니다. 아랫배를 버티게 해요.",
+      "steps": ["누워서 손을 엉덩이 아래나 옆에 둡니다.", "다리를 펴서 바닥에서 한 뼘 들어 올립니다.", "다리를 위아래로 작게 번갈아 찹니다."],
+      "mistakes": ["허리가 뜨기", "다리를 너무 높이 들기"],
+      "easier": "다리를 더 높이 들기", "harder": "다리를 더 낮게"
+    },
+    {
+      "key": "burpee", "name": "버피", "aliases": ["버피 테스트", "버피테스트", "버피스"],
+      "kind": "strength", "equipment": "bodyweight", "targets": ["legs.quads", "chest.mid_chest", "core.abs"], "image": null,
+      "summary": "앉았다가 엎드려 푸시업 자세를 만들고 다시 일어나 뛰는 전신 운동입니다. 짧은 시간에 심박을 크게 올려요(층간소음 주의).",
+      "steps": ["서 있다가 쪼그려 앉아 손을 바닥에 짚습니다.", "다리를 뒤로 뻗어 푸시업 자세를 만들었다가 다시 당겨옵니다.", "일어서며 가볍게 뛰어오릅니다."],
+      "mistakes": ["허리가 처진 채 엎드리기", "쿵 착지하기"],
+      "easier": "점프 빼고, 다리를 한 발씩", "harder": "푸시업 한 번 넣기"
     }
   ]
 }

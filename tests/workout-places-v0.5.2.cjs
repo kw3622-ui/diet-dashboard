@@ -37,23 +37,23 @@ const logs = [
   { log_date: '2026-11-20', exercise_meta: { items: [
     { name: '밴드 풀 업: 총 25회 수행', kind: 'strength' }, { name: '밴드 풀업', kind: 'strength' },
     { name: '근력 운동', kind: 'strength' }, { name: '보행', kind: 'cardio' }, { name: '최고 중량', kind: 'strength' },
-    { name: '케틀벨 스윙', kind: 'strength' }] } },
-  { log_date: '2026-11-18', exercise_meta: { items: [{ name: '데드 리프트', kind: 'strength' }, { name: '케틀벨 스윙 3세트', kind: 'strength' }] } },
+    { name: '랜드마인 로우', kind: 'strength' }] } },
+  { log_date: '2026-11-18', exercise_meta: { items: [{ name: '데드 리프트', kind: 'strength' }, { name: '랜드마인 로우 3세트', kind: 'strength' }] } },
   { log_date: '2026-11-10', ingredients: ['밴드 풀업(6세트)', '런닝머신 2km 15분', '알 수 없는 것'] },
 ];
 const rec = plain(ctx.collectRecordedExercises(logs, index));
 assert.deepEqual(rec.map(r => [r.key, r.count, r.lastDate]), [
+  ['custom:랜드마인 로우', 2, '2026-11-20'],
   ['band-pull-up', 2, '2026-11-20'],
-  ['custom:케틀벨 스윙', 2, '2026-11-20'],
   ['deadlift', 1, '2026-11-18'],
 ]);
-assert.equal(rec[0].name, '밴드 풀업');
+assert.equal(rec[1].name, '밴드 풀업');
 pass('recorded strength exercises: once per log, no generic, cardio or one-off unknown names');
 
 // 3. 처음 설정 → 장소 목록
 const records = rec.map(r => ({ key: r.key }));
 const placed = plain(ctx.applyPlaceChoices({ ...ctx.emptyWorkoutPlaces(), company: ['push-up', 'deadlift'], apartment: ['leg-press'] }, records,
-  { 'band-pull-up': 'both', deadlift: 'company', 'custom:케틀벨 스윙': 'none' }));
+  { 'band-pull-up': 'both', deadlift: 'company', 'custom:랜드마인 로우': 'none' }));
 assert.deepEqual(placed.company, ['push-up', 'band-pull-up', 'deadlift']);
 assert.deepEqual(placed.apartment, ['leg-press', 'band-pull-up']);
 assert.equal(placed.setupDone, true);
@@ -61,7 +61,7 @@ assert.deepEqual(plain(ctx.applyPlaceChoices(null, [{ key: 'deadlift' }], {})).a
 assert.equal(ctx.choiceFromPlaces(placed, 'band-pull-up'), 'both');
 assert.equal(ctx.choiceFromPlaces(placed, 'deadlift'), 'company');
 assert.equal(ctx.choiceFromPlaces(placed, 'leg-press'), 'apartment');
-assert.equal(ctx.choiceFromPlaces(placed, 'custom:케틀벨 스윙'), 'none');
+assert.equal(ctx.choiceFromPlaces(placed, 'custom:랜드마인 로우'), 'none');
 pass('setup choices become place lists and keep manually added ones');
 
 // 4. 집 종목, 이름, 검색
@@ -72,19 +72,19 @@ assert.ok(homeBar.some(e => e.key === 'pull-up') && !homeBar.some(e => e.equipme
 pass('home exercises follow equipment');
 const byKey = new Map(lib.exercises.map(e => [e.key, e]));
 assert.equal(ctx.placeExerciseName('deadlift', byKey), '데드리프트');
-assert.equal(ctx.placeExerciseName('custom:케틀벨 스윙', byKey), '케틀벨 스윙');
+assert.equal(ctx.placeExerciseName('custom:랜드마인 로우', byKey), '랜드마인 로우');
 const found = plain(ctx.searchExerciseLibrary(lib, '레그 컬', [])).map(e => e.key);
 assert.ok(found.includes('lying-leg-curl'));
 assert.ok(!plain(ctx.searchExerciseLibrary(lib, '', ['deadlift'])).some(e => e.key === 'deadlift' || e.kind !== 'strength'));
 pass('names and library search');
 
 // 5. 부위별 묶음과 빈 부위
-const groups = plain(ctx.groupExercisesByPart(['deadlift', 'barbell-bench-press', 'custom:케틀벨 스윙', 'push-up', 'nope'], k => byKey.get(k)));
+const groups = plain(ctx.groupExercisesByPart(['deadlift', 'barbell-bench-press', 'custom:랜드마인 로우', 'push-up', 'nope'], k => byKey.get(k)));
 const ORDER = ['chest', 'back', 'shoulder', 'arm', 'legs', 'core', 'other'];
 const keysInOrder = groups.map(g => ORDER.indexOf(g.key));
 assert.ok(keysInOrder.every((v, i) => v >= 0 && (i === 0 || v > keysInOrder[i - 1])), 'groups follow part order, no empty groups');
 assert.ok(groups.find(g => g.key === byKey.get('deadlift').targets[0].split('.')[0]).items.includes('deadlift'), 'first target decides group');
-assert.deepEqual(groups.find(g => g.key === 'other').items, ['custom:케틀벨 스윙', 'nope']);
+assert.deepEqual(groups.find(g => g.key === 'other').items, ['custom:랜드마인 로우', 'nope']);
 assert.deepEqual(groups.find(g => g.key === 'chest').items.slice(0, 1), ['barbell-bench-press'], 'keeps order inside group');
 assert.deepEqual(plain(ctx.shortTargetLabels({ targets: ['chest.upper_chest', 'legs', 'x.y', 'chest.upper_chest'] })), ['윗가슴', '하체']);
 assert.equal(ctx.missingSubParts([]).length, 17);
