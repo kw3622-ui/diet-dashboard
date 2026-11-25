@@ -161,7 +161,9 @@ const checks = [
 ];
 checks.push(
   ['countdown 3-2-1 beeps', /\{ before: 3, freq: 880[\s\S]*\{ before: 2, freq: 880[\s\S]*\{ before: 1, freq: 880/],
-  ['boxing bell three times at the end', /\{ before: 0, bell: true \},\n\s*\{ before: -0\.35, bell: true \},\n\s*\{ before: -0\.7, bell: true \},/],
+  ['boxing bell three times at the end', /before: 0, bell: true[\s\S]{0,60}before: -0\.23, bell: true[\s\S]{0,90}before: -0\.46, bell: true/],
+  ['metal strike noise and detuned partials', /band\.type = 'bandpass'[\s\S]*\[-BELL_SHIMMER_HZ, BELL_SHIMMER_HZ\]/],
+  ['sound preview button with version label', /onClick=\{previewRestSounds\} data-sound-preview[\s\S]{0,200}\{BELL_SOUND_LABEL\}/],
   ['higher bell (1100Hz)', /const BELL_BASE_HZ = 1100;/],
   ['rest -10s and +10s buttons', /onClick=\{\(\) => adjustRest\(-10\)\}[\s\S]*onClick=\{\(\) => adjustRest\(10\)\}/],
   ['shortening past zero ends now', /const endsAt = Math\.max\(Date\.now\(\), s\.rest\.endsAt \+ deltaSec \* 1000\);/],

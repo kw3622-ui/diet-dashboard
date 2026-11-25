@@ -2358,26 +2358,72 @@
       { before: 1, freq: 880, dur: 0.12, gain: 0.2 },
       // 0초: 권투 종 "땡땡땡"(사용자 결정 2026-11-25)
       { before: 0, bell: true },
-      { before: -0.35, bell: true },
-      { before: -0.7, bell: true },
+      { before: -0.23, bell: true }, // 2026-11-25 간격 0.3 → 0.18 → 0.23초(사용자 요청)
+      { before: -0.46, bell: true },
     ];
-    // 권투 종 한 번 치기: 음 높이가 어긋난 여러 소리를 겹쳐 쇠붙이처럼 울리고 천천히 사라지게 한다(소리 파일 없음).
-    const BELL_PARTIALS = [[1, 0.5], [2.76, 0.32], [5.4, 0.2], [8.93, 0.12]];
-    const BELL_BASE_HZ = 1100; // 2026-11-25 "더 고음" 요청으로 620 → 1100Hz
-    const BELL_DECAY_SEC = 0.9;
+    // 권투 종 한 번 치기(소리 파일 없음). 쇠와 쇠가 부딪히는 소리가 나도록 세 가지를 겹친다.
+    //  1) 부딪히는 순간의 짧은 금속성 "탁"(높은 대역의 잡음 0.03초)
+    //  2) 음 높이가 어긋난 울림 8개(종의 배음 비율) — 사인파만 쓰면 그릇 소리처럼 들려서 2차 버전에서 바꿈
+    //  3) 울림마다 두 소리를 조금 어긋나게 겹쳐 "쨍–" 하고 떨리게
+    // 2026-11-25: 1차 620Hz → 2차 1100Hz(사인파 4개, "그릇 소리" 의견) → 3차 쇠 종소리(이것)
+    const BELL_SOUND_LABEL = '쇠 종소리(3차)';
+    const BELL_BASE_HZ = 1100;
+    const BELL_PARTIALS = [ // [배음 비율, 크기, 울리는 초]
+      [1, 1, 1.6], [1.59, 0.7, 1.3], [2.14, 0.6, 1.1], [2.83, 0.5, 0.9],
+      [3.51, 0.38, 0.7], [4.22, 0.3, 0.55], [5.43, 0.22, 0.4], [6.8, 0.15, 0.3],
+    ];
+    const BELL_SHIMMER_HZ = 2.5;
+    let bellNoiseBuffer = null;
     const strikeBell = (ctx, startAt, nodes) => {
-      BELL_PARTIALS.forEach(([ratio, level], i) => {
-        const osc = ctx.createOscillator(); const gain = ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.value = BELL_BASE_HZ * ratio;
-        const decay = BELL_DECAY_SEC / (1 + i * 0.6); // 높은 소리일수록 빨리 사라진다
-        gain.gain.setValueAtTime(0.0001, startAt);
-        gain.gain.exponentialRampToValueAtTime(0.3 * level, startAt + 0.005);
-        gain.gain.exponentialRampToValueAtTime(0.0001, startAt + decay);
-        osc.connect(gain); gain.connect(ctx.destination);
-        osc.start(startAt); osc.stop(startAt + decay + 0.05);
-        nodes.push(osc);
+      const master = ctx.createGain();
+      master.gain.value = 0.22;
+      master.connect(ctx.destination);
+      // 1) 부딪히는 "탁"
+      if (!bellNoiseBuffer || bellNoiseBuffer.sampleRate !== ctx.sampleRate) {
+        bellNoiseBuffer = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 0.04), ctx.sampleRate);
+        const data = bellNoiseBuffer.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      }
+      const noise = ctx.createBufferSource(); noise.buffer = bellNoiseBuffer;
+      const band = ctx.createBiquadFilter(); band.type = 'bandpass'; band.frequency.value = 5000; band.Q.value = 0.8;
+      const hit = ctx.createGain();
+      hit.gain.setValueAtTime(1.2, startAt);
+      hit.gain.exponentialRampToValueAtTime(0.001, startAt + 0.03);
+      noise.connect(band); band.connect(hit); hit.connect(master);
+      noise.start(startAt); noise.stop(startAt + 0.04);
+      nodes.push(noise);
+      // 2)·3) 어긋난 배음 울림, 둘씩 살짝 어긋나게
+      BELL_PARTIALS.forEach(([ratio, level, decay]) => {
+        [-BELL_SHIMMER_HZ, BELL_SHIMMER_HZ].forEach(detune => {
+          const osc = ctx.createOscillator(); const gain = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.value = BELL_BASE_HZ * ratio + detune;
+          gain.gain.setValueAtTime(0.0001, startAt);
+          gain.gain.exponentialRampToValueAtTime(0.5 * level, startAt + 0.002);
+          gain.gain.exponentialRampToValueAtTime(0.0001, startAt + decay);
+          osc.connect(gain); gain.connect(master);
+          osc.start(startAt); osc.stop(startAt + decay + 0.05);
+          nodes.push(osc);
+        });
       });
+    };
+    // ⚙️ 운동 설정의 미리 듣기: 삑·삑·삑 → 땡땡땡을 바로 한 번 들려준다(쉬는 시간 예약과는 따로).
+    const previewRestSounds = () => {
+      unlockWorkoutAudio();
+      const ctx = workoutAudioCtx;
+      if (!ctx) return false;
+      const untilEnd = 3.2;
+      REST_COUNTDOWN_PLAN.forEach(p => {
+        const at = ctx.currentTime + untilEnd - p.before;
+        try {
+          if (p.bell) { strikeBell(ctx, at, []); return; }
+          const osc = ctx.createOscillator(); const gain = ctx.createGain();
+          osc.frequency.value = p.freq; gain.gain.value = p.gain;
+          osc.connect(gain); gain.connect(ctx.destination);
+          osc.start(at); osc.stop(at + p.dur);
+        } catch { /* 소리 없음 */ }
+      });
+      return true;
     };
     let restScheduled = { endsAt: null, nodes: [] };
     const cancelRestSounds = () => {
@@ -2412,7 +2458,7 @@
       try {
         const ctx = workoutAudioCtx;
         if (!ctx) return;
-        [0, 0.35, 0.7].forEach(t => strikeBell(ctx, ctx.currentTime + t, []));
+        [0, 0.23, 0.46].forEach(t => strikeBell(ctx, ctx.currentTime + t, []));
       } catch { /* 소리 없음 */ }
     };
     const formatClock = (sec) => { const s = Math.max(0, Math.round(sec)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
@@ -3332,7 +3378,9 @@
                 <div className="flex items-center justify-between gap-2">
                   <span className="min-w-0">
                     <span className="block text-sm font-bold text-gray-700">카운트다운 소리</span>
-                    <span className="block text-[11px] text-gray-400">끝나기 3·2·1초 전 "삑", 끝나면 "삐–". 블루투스 이어폰으로도 나와요.</span>
+                    <span className="block text-[11px] text-gray-400">끝나기 3·2·1초 전 "삑", 끝나면 권투 종 "땡땡땡". 블루투스 이어폰으로도 나와요.</span>
+                    <button type="button" onClick={previewRestSounds} data-sound-preview
+                      className="mt-1.5 text-xs font-bold text-green-700 bg-green-50 px-2.5 py-1.5 rounded-lg">▶ 미리 듣기 · {BELL_SOUND_LABEL}</button>
                   </span>
                   <button type="button" disabled={saving} data-sound-setting
                     onClick={() => { unlockWorkoutAudio(); const rest = { ...(current.rest || {}) }; if (restSoundOn(current)) rest.sound = false; else delete rest.sound; save({ ...current, rest }); }}
