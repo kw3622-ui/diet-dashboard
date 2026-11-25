@@ -70,6 +70,10 @@ const recent = plain(ctx.recentWorkoutSessions(logs, index, 3));
 assert.deepEqual(recent.map(r => [r.date, r.keys.length]), [['2026-11-20', 2], ['2026-11-18', 3], ['2026-11-10', 1]]);
 assert.deepEqual(recent[0].parts, ['등', '가슴']);
 pass('recent sessions list date, parts and exercises');
+const sc = plain(new vm.Script('recentWorkoutShortcuts').runInContext(ctx)(logs, index));
+assert.deepEqual(sc.parts.map(p => [p.key, p.date, p.keys.length]), [['chest', '2026-11-20', 1], ['back', '2026-11-20', 1], ['shoulder', '2026-11-10', 1], ['legs', '2026-11-18', 1]]);
+assert.equal(sc.full, null, 'no day with 4 big parts');
+pass('shortcuts per part (arm split into biceps/triceps) and full body');
 
 // 4. 저장 줄 만들기(칼로리 없음, 체크한 세트만)
 const session = {

@@ -420,6 +420,31 @@
       }
       return out;
     };
+    // ★ v0.5.4 "최근 운동 그대로" 버튼: 부위별(팔은 이두·삼두로 나눔)과 전신.
+    // - 부위: 그 부위를 2종목 이상 한 가장 최근 날의 그 부위 종목만(없으면 1종목이라도 한 가장 최근 날)
+    // - 전신: 큰 부위를 4곳 이상 한 가장 최근 날의 종목 전체
+    // 종목은 첫 번째 부위로 나눈다(부위별 묶음과 같은 기준).
+    const SHORTCUT_GROUPS = [
+      { key: 'chest', label: '가슴' }, { key: 'back', label: '등' }, { key: 'shoulder', label: '어깨' },
+      { key: 'biceps', label: '이두' }, { key: 'triceps', label: '삼두' }, { key: 'legs', label: '하체' }, { key: 'core', label: '코어' },
+    ];
+    const FULL_BODY_MIN_PARTS = 4;
+    const shortcutGroupOf = (entry) => {
+      const [part, sub] = String(entry?.targets?.[0] || '').split('.');
+      if (part === 'arm') return sub === 'triceps' ? 'triceps' : 'biceps';
+      return SHORTCUT_GROUPS.some(g => g.key === part) ? part : null;
+    };
+    const recentWorkoutShortcuts = (logs, index) => {
+      const sessions = recentWorkoutSessions(logs, index, Infinity);
+      const keyMap = libraryKeyMap(index);
+      const parts = SHORTCUT_GROUPS.map(g => {
+        const withKeys = sessions.map(s => ({ date: s.date, keys: s.keys.filter(k => shortcutGroupOf(keyMap.get(k)) === g.key) })).filter(s => s.keys.length);
+        const pick = withKeys.find(s => s.keys.length >= 2) || withKeys[0];
+        return pick ? { key: g.key, label: g.label, date: pick.date, keys: pick.keys } : null;
+      }).filter(Boolean);
+      const full = sessions.find(s => s.parts.length >= FULL_BODY_MIN_PARTS) || null;
+      return { parts, full };
+    };
     const formatSessionSet = (item, s) => {
       if (item.input === 'hold') return s.seconds != null ? `${s.seconds}초` : '';
       if (item.input === 'reps') return s.reps != null ? `${s.weight ? s.weight + 'kg×' : ''}${s.reps}회` : '';
@@ -2438,7 +2463,18 @@
       if (session.stage === 'pick') {
         const picked = session.picked || [];
         const toggle = (key) => update(s => ({ ...s, picked: (s.picked || []).includes(key) ? s.picked.filter(k => k !== key) : [...(s.picked || []), key] }));
-        const recent = recentWorkoutSessions(allLogs || [], index, 3);
+        const shortcuts = recentWorkoutShortcuts(allLogs || [], index);
+        const mdLabel = (d) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`;
+        const shortcutButton = (id, keys, text, wide) => {
+          const on = keys.every(k => picked.includes(k));
+          return (
+            <button key={id} type="button" data-shortcut={id}
+              onClick={() => update(s => ({ ...s, picked: on ? (s.picked || []).filter(k => !keys.includes(k)) : [...new Set([...(s.picked || []), ...keys])] }))}
+              className={`${wide ? 'col-span-2' : ''} text-left rounded-xl px-3 py-2 border ${on ? 'bg-green-50 border-green-300 text-green-800' : 'bg-gray-50 border-transparent text-gray-700'}`}>
+              {text(on)}
+            </button>
+          );
+        };
         const listKeys = [...new Set([...placeKeys, ...picked])];
         const start = () => {
           const d = new Date();
@@ -2462,20 +2498,23 @@
                 ))}
               </div>
             </div>
-            {recent.length > 0 && (
+            {(shortcuts.parts.length > 0 || shortcuts.full) && (
               <div className="bg-white rounded-3xl p-4 shadow-sm" data-recent-sessions>
-                <h3 className="font-bold text-gray-800 mb-2">최근 운동 그대로</h3>
-                <div className="space-y-1.5">
-                  {recent.map(r => {
-                    const on = r.keys.every(k => picked.includes(k));
-                    return (
-                      <button key={r.date + r.keys.join()} type="button" data-recent-session={r.date}
-                        onClick={() => update(s => ({ ...s, picked: on ? (s.picked || []).filter(k => !r.keys.includes(k)) : [...new Set([...(s.picked || []), ...r.keys])] }))}
-                        className={`w-full text-left rounded-xl px-3 py-2 text-sm font-bold border ${on ? 'bg-green-50 border-green-300 text-green-800' : 'bg-gray-50 border-transparent text-gray-700'}`}>
-                        {on ? '✓ ' : ''}{Number(r.date.slice(5, 7))}/{Number(r.date.slice(8, 10))} · {r.parts.join('·')} {r.keys.length}종목
-                      </button>
-                    );
-                  })}
+                <h3 className="font-bold text-gray-800">최근 운동 그대로</h3>
+                <p className="text-[11px] text-gray-400 mb-2">부위를 여러 개 누르면 합쳐져요(예: 등 + 이두). 무게는 종목마다 가장 최근 기록으로 채워요.</p>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {shortcuts.parts.map(p => shortcutButton(p.key, p.keys, on => (
+                    <>
+                      <span className="block text-sm font-bold">{on ? '✓ ' : ''}{p.label}</span>
+                      <span className="block text-[11px] text-gray-400">{mdLabel(p.date)} · {p.keys.length}종목</span>
+                    </>
+                  )))}
+                  {shortcuts.full && shortcutButton('full', shortcuts.full.keys, on => (
+                    <>
+                      <span className="block text-sm font-bold">{on ? '✓ ' : ''}전신</span>
+                      <span className="block text-[11px] text-gray-400">{mdLabel(shortcuts.full.date)} · {shortcuts.full.parts.join('·')} {shortcuts.full.keys.length}종목</span>
+                    </>
+                  ), true)}
                 </div>
               </div>
             )}
@@ -2494,7 +2533,7 @@
                             className={`w-6 h-6 shrink-0 rounded-md border-2 flex items-center justify-center text-xs font-bold ${on ? 'bg-green-600 border-green-600 text-white' : 'border-gray-300 text-transparent'}`}>✓</button>
                           <span className="min-w-0 flex-1 text-sm">
                             {nameButton(key, placeExerciseName(key, byKey))}
-                            <span className="block text-[11px] text-gray-400 truncate">{lastLine(key)}</span>
+                            <span className="block text-[11px] text-gray-400 truncate">{placeKeys.includes(key) ? '' : <span className="text-amber-600 font-bold">목록에 없음 · </span>}{lastLine(key)}</span>
                           </span>
                         </div>
                       );
