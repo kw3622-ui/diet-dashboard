@@ -356,11 +356,13 @@
     // ★ v0.5.4 헬스 기록 도우미 ─────────────────────────────────────────────
     // 입력 방식: 무게×횟수(weight) / 횟수만(reps, 맨몸·철봉) / 초(hold, 버티기)
     const HOLD_EXERCISE_KEYS = new Set(['plank', 'side-plank', 'wall-sit', 'dead-hang']);
+    const REPS_ONLY_KEYS = new Set(['captains-chair-leg-raise']);
     const REPS_ONLY_EQUIPMENT = ['bodyweight', 'pullup_bar', 'parallel_bars', 'band', 'ab_wheel'];
     const exerciseInputKind = (entry) => {
       if (!entry) return 'weight';
       if (HOLD_EXERCISE_KEYS.has(entry.key)) return 'hold';
       if (entry.key === 'weighted-pull-up') return 'weight';
+      if (REPS_ONLY_KEYS.has(entry.key)) return 'reps'; // 기구 틀을 쓰지만 몸무게로 하는 종목
       return REPS_ONLY_EQUIPMENT.includes(entry.equipment) ? 'reps' : 'weight';
     };
     // 쉬는 시간: 큰 종목 80초, 나머지 60초(사용자 결정 2026-11-25)
@@ -407,6 +409,18 @@
       if (!list.length) return null;
       if (['machine', 'cable', 'smith'].includes(entry.equipment)) return list.find(h => h.location === location) || list[0];
       return list[0];
+    };
+    // ★ 미리 채울 세트: 무게·횟수는 가장 최근 기록, 세트 수는 그 종목 최근 3번 중 가장 많이 한 수.
+    // 몇 세트만 한 날이 가장 최근이어도 다음 기본 세트 수가 줄지 않게 한다. 모자란 세트는 최근 기록의 마지막 세트로 채운다.
+    const PLANNED_SET_LOOKBACK = 3;
+    const plannedSetsFrom = (history, entry, location) => {
+      const last = pickLastSets(history, entry, location);
+      if (!last || !last.sets.length) return last;
+      const list = history?.get(entry?.key) || [];
+      const target = Math.max(last.sets.length, ...list.slice(0, PLANNED_SET_LOOKBACK).map(h => h.sets.length));
+      const sets = [...last.sets];
+      while (sets.length < target) sets.push({ ...last.sets[last.sets.length - 1] });
+      return { ...last, sets };
     };
     const emptySet = () => ({ weight: null, reps: null, seconds: null, done: false, failed: false });
     const makeSessionItem = (entry, last, places) => ({
@@ -518,6 +532,8 @@
           },
           items: items.map(item => ({
             name: item.name, key: item.key, kind: 'strength', targets: item.targets, source: 'coach', equipment: item.equipment, input: item.input,
+            // 계획했던 세트 수(체크 안 한 세트 포함). 일부러 덜 한 날을 다음 무게 판단에서 '실패'로 보지 않게 쓴다.
+            plannedSets: item.sets.length,
             sets: item.doneSets.map(s => ({ weight: item.input === 'hold' ? null : (s.weight ?? null), unit: 'kg', reps: item.input === 'hold' ? null : (s.reps ?? null), seconds: item.input === 'hold' ? (s.seconds ?? null) : null, ...(s.failed ? { failed: true } : {}) })),
           })),
         },
@@ -2340,8 +2356,29 @@
       { before: 3, freq: 880, dur: 0.12, gain: 0.2 },
       { before: 2, freq: 880, dur: 0.12, gain: 0.2 },
       { before: 1, freq: 880, dur: 0.12, gain: 0.2 },
-      { before: 0, freq: 1320, dur: 0.5, gain: 0.25 },
+      // 0초: 권투 종 "땡땡땡"(사용자 결정 2026-11-25)
+      { before: 0, bell: true },
+      { before: -0.35, bell: true },
+      { before: -0.7, bell: true },
     ];
+    // 권투 종 한 번 치기: 음 높이가 어긋난 여러 소리를 겹쳐 쇠붙이처럼 울리고 천천히 사라지게 한다(소리 파일 없음).
+    const BELL_PARTIALS = [[1, 0.5], [2.76, 0.32], [5.4, 0.2], [8.93, 0.12]];
+    const BELL_BASE_HZ = 620;
+    const BELL_DECAY_SEC = 1.1;
+    const strikeBell = (ctx, startAt, nodes) => {
+      BELL_PARTIALS.forEach(([ratio, level], i) => {
+        const osc = ctx.createOscillator(); const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = BELL_BASE_HZ * ratio;
+        const decay = BELL_DECAY_SEC / (1 + i * 0.6); // 높은 소리일수록 빨리 사라진다
+        gain.gain.setValueAtTime(0.0001, startAt);
+        gain.gain.exponentialRampToValueAtTime(0.3 * level, startAt + 0.005);
+        gain.gain.exponentialRampToValueAtTime(0.0001, startAt + decay);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(startAt); osc.stop(startAt + decay + 0.05);
+        nodes.push(osc);
+      });
+    };
     let restScheduled = { endsAt: null, nodes: [] };
     const cancelRestSounds = () => {
       restScheduled.nodes.forEach(n => { try { n.stop(); } catch { /* 이미 끝남 */ } });
@@ -2358,6 +2395,7 @@
         const at = untilEnd - p.before;
         if (at < 0) return; // 이미 지난 소리는 건너뛴다
         try {
+          if (p.bell) { strikeBell(ctx, ctx.currentTime + at, nodes); return; }
           const osc = ctx.createOscillator(); const gain = ctx.createGain();
           osc.frequency.value = p.freq; gain.gain.value = p.gain;
           osc.connect(gain); gain.connect(ctx.destination);
@@ -2367,17 +2405,14 @@
       });
       restScheduled = { endsAt, nodes };
     };
-    // 끝났을 때: 진동(안드로이드). 소리를 예약하지 못했으면(새로고침 직후 등) 끝 소리만 바로 낸다.
+    // 끝났을 때: 진동(안드로이드). 소리를 예약하지 못했으면(새로고침 직후 등) 종소리만 바로 낸다.
     const notifyRestDone = (endsAt, soundOn) => {
       try { if (navigator.vibrate) navigator.vibrate([200, 100, 200]); } catch { /* 진동 없음 */ }
       if (!soundOn || restScheduled.endsAt === endsAt) return;
       try {
         const ctx = workoutAudioCtx;
         if (!ctx) return;
-        const osc = ctx.createOscillator(); const gain = ctx.createGain();
-        osc.frequency.value = 1320; gain.gain.value = 0.25;
-        osc.connect(gain); gain.connect(ctx.destination);
-        osc.start(); osc.stop(ctx.currentTime + 0.5);
+        [0, 0.35, 0.7].forEach(t => strikeBell(ctx, ctx.currentTime + t, []));
       } catch { /* 소리 없음 */ }
     };
     const formatClock = (sec) => { const s = Math.max(0, Math.round(sec)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
@@ -2486,7 +2521,7 @@
         const entry = entryFor(key);
         if (!entry) return;
         if (session.stage === 'pick') update(s => ({ ...s, picked: [...(s.picked || []), key] }));
-        else update(s => ({ ...s, items: [...s.items, makeSessionItem(entry, pickLastSets(history, entry, s.location), places)] }));
+        else update(s => ({ ...s, items: [...s.items, makeSessionItem(entry, plannedSetsFrom(history, entry, s.location), places)] }));
         addToPlace(key);
         setSearchOpen(false); setQuery(''); setAlternatives(null);
       };
@@ -2556,7 +2591,7 @@
             ...s, stage: 'run', startedAt: d.toISOString(),
             date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
             time: `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`,
-            items: (s.picked || []).map(k => entryFor(k)).filter(Boolean).map(e => makeSessionItem(e, pickLastSets(history, e, s.location), places)),
+            items: (s.picked || []).map(k => entryFor(k)).filter(Boolean).map(e => makeSessionItem(e, plannedSetsFrom(history, e, s.location), places)),
           }));
           try { localStorage.setItem('workoutLastPlace', session.location); } catch { /* 기억 못 해도 동작 */ }
           window.scrollTo(0, 0);

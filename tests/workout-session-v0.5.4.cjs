@@ -22,7 +22,7 @@ const ctx = {};
 vm.createContext(ctx);
 new vm.Script(html.slice(partsStart, partsEnd) + html.slice(start, end) + `
 ;Object.assign(globalThis, { buildExerciseIndex, exerciseInputKind, restSecondsFor, exerciseSetHistory, pickLastSets, makeSessionItem,
-  recentWorkoutSessions, formatSessionSet, setHasValue, buildWorkoutLog, sessionFromLog, isCoachLog, libraryKeyMap, exerciseDetailLines, sanitizeWorkoutPlaces, restSoundOn });`).runInContext(ctx);
+  recentWorkoutSessions, formatSessionSet, setHasValue, buildWorkoutLog, sessionFromLog, isCoachLog, libraryKeyMap, exerciseDetailLines, sanitizeWorkoutPlaces, restSoundOn, plannedSetsFrom });`).runInContext(ctx);
 const index = ctx.buildExerciseIndex(lib);
 const byKey = ctx.libraryKeyMap(index);
 const E = (k) => byKey.get(k);
@@ -33,6 +33,7 @@ assert.equal(ctx.exerciseInputKind(E('pull-up')), 'reps');
 assert.equal(ctx.exerciseInputKind(E('weighted-pull-up')), 'weight');
 assert.equal(ctx.exerciseInputKind(E('plank')), 'hold');
 assert.equal(ctx.exerciseInputKind(E('push-up')), 'reps');
+assert.equal(ctx.exerciseInputKind(E('captains-chair-leg-raise')), 'reps');
 for (const k of ['barbell-squat', 'deadlift', 'barbell-bench-press', 'barbell-row', 'leg-press', 'seated-dumbbell-shoulder-press', 'pull-up', 'romanian-deadlift'])
   assert.equal(ctx.restSecondsFor(E(k)), 80, k);
 for (const k of ['dumbbell-lateral-raise', 'ez-bar-curl', 'cable-rope-triceps', 'leg-extension', 'cable-upright-row', 'smith-calf-raise', 'face-pull', 'crunch', 'dumbbell-fly'])
@@ -78,6 +79,15 @@ assert.equal(fresh.sets.length, 3);
 assert.ok(fresh.sets.every(s => s.weight == null && !s.done));
 pass('last sets: whole previous sets, machines prefer same place, new exercise has 3 empty sets');
 
+// 세트 수: 최근 3번 중 가장 많이 한 수, 무게는 가장 최근(11/20 1세트, 11/18 3세트)
+const planned = plain(ctx.plannedSetsFrom(history, E('barbell-bench-press'), 'company'));
+assert.equal(planned.date, '2026-11-20');
+assert.deepEqual(planned.sets.map(s => [s.weight, s.reps]), [[62.5, 8], [62.5, 8], [62.5, 8]]);
+assert.equal(ctx.plannedSetsFrom(history, E('hack-squat'), 'company'), null);
+const fourBack = new Map([['x', [{ date: 'd5', sets: [{ weight: 1, reps: 1 }] }, { date: 'd4', sets: [{}, {}] }, { date: 'd3', sets: [{}, {}] }, { date: 'd2', sets: [{}, {}, {}, {}, {}] }]]]);
+assert.equal(ctx.plannedSetsFrom(fourBack, { key: 'x', equipment: 'barbell' }, null).sets.length, 2, 'only the last 3 records count');
+pass('planned sets: count from the last 3 records, values from the latest');
+
 // 3. 최근 운동 그대로
 const recent = plain(ctx.recentWorkoutSessions(logs, index, 3));
 assert.deepEqual(recent.map(r => [r.date, r.keys.length]), [['2026-11-20', 2], ['2026-11-18', 3], ['2026-11-10', 1]]);
@@ -110,6 +120,7 @@ assert.ok(!/칼로리|kcal/i.test(JSON.stringify(row)), 'no calories');
 const meta = row.exercise_meta;
 assert.equal(meta.version, 2); assert.equal(meta.detailVersion, 2); assert.equal(meta.detailSource, 'coach'); assert.equal(meta.location, 'company');
 assert.deepEqual(meta.session, { startedAt: '2026-11-25T10:00:00.000Z', endedAt: '2026-11-25T10:52:00.000Z', minutes: 52, rating: 'ok', failedSets: 1, skippedToday: ['smith-calf-raise'] });
+assert.deepEqual(meta.items.map(i => i.plannedSets), [3, 2, 1], 'planned set counts kept');
 assert.deepEqual(meta.items[0].sets, [{ weight: 65, unit: 'kg', reps: 8, seconds: null }, { weight: 65, unit: 'kg', reps: 6, seconds: null, failed: true }]);
 assert.deepEqual(meta.items[2].sets, [{ weight: null, unit: 'kg', reps: null, seconds: 60 }]);
 assert.deepEqual(meta.items.map(i => i.targets[0]), ['chest.mid_chest', E('pull-up').targets[0], E('plank').targets[0]]);
@@ -149,7 +160,9 @@ const checks = [
   ['setup starts from existing lists', /const hasLists = setupDone \|\| current\.company\.length > 0 \|\| current\.apartment\.length > 0;/],
 ];
 checks.push(
-  ['countdown 3-2-1 and end tone', /\{ before: 3, freq: 880[\s\S]*\{ before: 2, freq: 880[\s\S]*\{ before: 1, freq: 880[\s\S]*\{ before: 0, freq: 1320/],
+  ['countdown 3-2-1 beeps', /\{ before: 3, freq: 880[\s\S]*\{ before: 2, freq: 880[\s\S]*\{ before: 1, freq: 880/],
+  ['boxing bell three times at the end', /\{ before: 0, bell: true \},\n\s*\{ before: -0\.35, bell: true \},\n\s*\{ before: -0\.7, bell: true \},/],
+  ['sessions start from planned sets', /makeSessionItem\(e, plannedSetsFrom\(history, e, s\.location\), places\)/],
   ['bluetooth wake tone is almost silent', /\{ before: 3\.6, freq: 440, dur: 0\.4, gain: 0\.002 \}/],
   ['sounds rescheduled or cancelled with rest', /if \(!restEndsAt \|\| !workoutSoundOn\) \{ cancelRestSounds\(\); return; \}\n\s*scheduleRestSounds\(restEndsAt\);/],
   ['sound toggle on run screen', /data-sound-toggle/],
