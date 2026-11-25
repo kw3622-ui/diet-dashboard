@@ -38,4 +38,4 @@ v0.5.0(시험판)을 바탕으로 합니다. 서버(diet-ai v0.0.21)·DB 변경�
 ## 배포 범위
 
 - 시험 페이지: `index_v0.5.1.html`, `exercise_library_v1.json`
-- 되돌리기: 운영 교체 전까지는 해당 없음(운영 `index.html`은 v0.4.6)
+- 2026-11-26 v0.4.7~v0.5.6을 함께 운영 `index.html`에 반영했습니다(운영 = `index_v0.5.6.html`). 되돌리기: `index_rollback_pre_v0.5.6.html`(v0.4.6 운영 화면)을 `index.html`로 복사.

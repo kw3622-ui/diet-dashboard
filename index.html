@@ -181,6 +181,681 @@
       };
     };
 
+    // ★ v0.5.0 운동 기록의 세트별 무게·횟수와 유산소 숫자(서버 diet-ai v0.0.21이 exercise_meta에 저장)를 종목마다 한 줄로 만든다.
+    const formatExerciseSet = (s) => {
+      const unit = s?.unit === 'lb' ? 'lb' : 'kg';
+      const hasW = s?.weight != null, hasR = s?.reps != null, hasS = s?.seconds != null;
+      if (hasW && hasR) return `${s.weight}${unit}×${s.reps}`;
+      if (hasW && hasS) return `${s.weight}${unit}·${s.seconds}초`;
+      if (hasW) return `${s.weight}${unit}`;
+      if (hasR) return `${s.reps}회`;
+      if (hasS) return `${s.seconds}초`;
+      return '';
+    };
+    const formatPace = (sec) => `${Math.floor(sec / 60)}'${String(Math.round(sec % 60)).padStart(2, '0')}"/km`;
+    const exerciseDetailLines = (meta) => (meta?.items || []).map(item => {
+      const sets = (Array.isArray(item?.sets) ? item.sets : []).map(formatExerciseSet).filter(Boolean);
+      const cardio = [
+        item?.distanceKm != null ? `${item.distanceKm}km` : '',
+        item?.paceSecPerKm != null ? formatPace(item.paceSecPerKm) : '',
+        item?.avgHeartRate != null ? `${item.avgHeartRate}bpm` : '',
+      ].filter(Boolean);
+      if (cardio.length && item?.minutes != null) cardio.splice(1, 0, `${item.minutes}분`);
+      return { name: item?.name || '', text: sets.length ? sets.join(' · ') : cardio.join(' · ') };
+    }).filter(line => line.name && line.text);
+
+    // ★ v0.5.1 운동 종목 사전(exercise_library_v1.json). 종목 이름을 누르면 설명을 보여준다.
+    // 기록 이름의 ": 총 3세트", "26회", 띄어쓰기 차이는 무시하고 이름·별칭으로 찾는다.
+    const EXERCISE_LIBRARY_URL = 'exercise_library_v1.json';
+    const normalizeExerciseKey = (name) => String(name || '').split(':')[0].replace(/\(.*$/, '')
+      .replace(/(\s*(총\s*)?\d+(\.\d+)?\s*(세트|회|kg|km|분)\s*(수행)?)+\s*$/, '')
+      .toLowerCase().replace(/[\s·\-_]/g, '');
+    const buildExerciseIndex = (library) => {
+      const index = new Map();
+      (library?.exercises || []).forEach(entry => [entry.name, ...(entry.aliases || [])].forEach(n => {
+        const key = normalizeExerciseKey(n);
+        if (key && !index.has(key)) index.set(key, entry);
+      }));
+      return index;
+    };
+    let exerciseLibraryPromise = null;
+    const loadExerciseLibrary = () => {
+      if (!exerciseLibraryPromise) {
+        exerciseLibraryPromise = fetch(EXERCISE_LIBRARY_URL, { cache: 'no-cache' })
+          .then(res => { if (!res.ok) throw new Error('HTTP ' + res.status); return res.json(); })
+          .then(library => ({ library, index: buildExerciseIndex(library) }))
+          .catch(() => { exerciseLibraryPromise = null; return null; }); // 사전을 못 불러와도 기록 화면은 그대로 보인다
+      }
+      return exerciseLibraryPromise;
+    };
+    const exerciseTargetLabels = (targets) => (targets || []).map(t => {
+      const [part, sub] = String(t).split('.');
+      const def = EXERCISE_PARTS.find(p => p.key === part);
+      if (!def) return null;
+      const subLabel = sub ? (def.subs.find(([k]) => k === sub) || [])[1] : null;
+      return subLabel ? `${def.label} · ${subLabel}` : def.label;
+    }).filter(Boolean);
+    // 운동 카드의 종목 줄: 숫자가 있거나 사전 설명이 있는 종목만 보여준다.
+    const exerciseCardLines = (meta, index) => {
+      const numbers = new Map(exerciseDetailLines(meta).map(line => [line.name, line.text]));
+      return (meta?.items || []).map(item => {
+        const name = item?.name || '';
+        const info = index ? (index.get(normalizeExerciseKey(name)) || null) : null;
+        return { name, text: numbers.get(name) || '', info };
+      }).filter(line => line.name && (line.text || line.info));
+    };
+
+    // ★ v0.5.2 장소 설정(profiles.workout_places): 장소마다 할 수 있는 근력 종목 키 목록과 집 장비.
+    // 사전에 있는 종목은 사전 key, 없는 종목은 'custom:이름'으로 저장한다.
+    const WORKOUT_PLACES = [
+      { key: 'company', label: '회사', icon: '🏢' },
+      { key: 'apartment', label: '아파트', icon: '🏘️' },
+      { key: 'home', label: '집', icon: '🏠' },
+    ];
+    const HOME_EQUIPMENT_OPTIONS = [['pullup_bar', '문틀 철봉'], ['dumbbell', '덤벨'], ['band', '고무 밴드'], ['kettlebell', '케틀벨'], ['ab_wheel', '복근 롤러']];
+    // ★ v0.5.3 기록에서 찾은 새 운동을 직접 추가할 때 고르는 장비(유산소 기구·도구 없음 제외)
+    const CUSTOM_EQUIPMENT = ['barbell', 'dumbbell', 'machine', 'cable', 'smith', 'bodyweight', 'pullup_bar', 'band', 'kettlebell', 'parallel_bars', 'ab_wheel'];
+    const MAX_CUSTOM_EXERCISES = 50;
+    const isValidTarget = (t) => {
+      const [part, sub] = String(t || '').split('.');
+      const def = EXERCISE_PARTS.find(p => p.key === part);
+      return !!def && !!sub && def.subs.some(([k]) => k === sub);
+    };
+    const PLACE_CHOICES = [['both', '둘 다'], ['company', '회사'], ['apartment', '아파트'], ['none', '안 함']];
+    // 여러 운동을 묶은 이름은 종목이 아니다.
+    const GENERIC_EXERCISE_KEYS = new Set(['근력운동', '웨이트트레이닝', '웨이트', '헬스', '운동', '근력', '근력훈련', '상체운동', '하체운동']);
+    const MAX_PLACE_EXERCISES = 200;
+    const REST_MIN_SEC = 30;
+    const REST_MAX_SEC = 300;
+    const emptyWorkoutPlaces = () => ({ version: 1, company: [], apartment: [], homeEquipment: [], setupDone: false });
+    const sanitizeWorkoutPlaces = (raw) => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+      const keys = (v) => [...new Set((Array.isArray(v) ? v : []).filter(k => typeof k === 'string' && k.trim() && k.length <= 60))].slice(0, MAX_PLACE_EXERCISES);
+      const homeEquipment = keys(raw.homeEquipment).filter(k => HOME_EQUIPMENT_OPTIONS.some(([o]) => o === k));
+      const out = { version: 1, company: keys(raw.company), apartment: keys(raw.apartment), homeEquipment, setupDone: raw.setupDone === true };
+      if (typeof raw.updatedAt === 'string') out.updatedAt = raw.updatedAt.slice(0, 40);
+      // ★ v0.5.3 직접 추가한 종목 { 'custom:이름': {name, targets, equipment} }, '운동 아님'으로 숨긴 이름. 있을 때만 둔다.
+      const custom = {};
+      if (raw.customExercises && typeof raw.customExercises === 'object' && !Array.isArray(raw.customExercises)) {
+        Object.entries(raw.customExercises).slice(0, MAX_CUSTOM_EXERCISES).forEach(([key, v]) => {
+          if (!key.startsWith('custom:') || key.length > 60 || !v || typeof v !== 'object') return;
+          const name = String(v.name || '').trim().slice(0, 40);
+          if (!name) return;
+          const targets = [...new Set((Array.isArray(v.targets) ? v.targets : []).filter(isValidTarget))].slice(0, 4);
+          custom[key] = { name, targets, equipment: CUSTOM_EQUIPMENT.includes(v.equipment) ? v.equipment : 'bodyweight' };
+        });
+      }
+      if (Object.keys(custom).length) out.customExercises = custom;
+      // ★ v0.5.4 쉬는 시간 설정: 기본값(큰 종목·나머지)과 카운트다운 소리, 종목별로 정한 값. 있을 때만 둔다.
+      const restSec = (v) => { const n = Math.round(Number(v)); return Number.isFinite(n) && n >= REST_MIN_SEC && n <= REST_MAX_SEC ? n : null; };
+      if (raw.rest && typeof raw.rest === 'object' && !Array.isArray(raw.rest)) {
+        const rest = {};
+        if (restSec(raw.rest.big) != null) rest.big = restSec(raw.rest.big);
+        if (restSec(raw.rest.small) != null) rest.small = restSec(raw.rest.small);
+        if (raw.rest.sound === false) rest.sound = false;
+        if (Object.keys(rest).length) out.rest = rest;
+      }
+      if (raw.restByKey && typeof raw.restByKey === 'object' && !Array.isArray(raw.restByKey)) {
+        const byKey = {};
+        Object.entries(raw.restByKey).slice(0, MAX_PLACE_EXERCISES).forEach(([k, v]) => { if (k.length <= 60 && restSec(v) != null) byKey[k] = restSec(v); });
+        if (Object.keys(byKey).length) out.restByKey = byKey;
+      }
+      const ignored = keys(raw.ignored);
+      if (ignored.length) out.ignored = ignored;
+      return out;
+    };
+    // 직접 추가한 종목을 사전 항목 모양으로(설명·그림 없음).
+    const customEntries = (places) => Object.entries(places?.customExercises || {}).map(([key, v]) => ({
+      key, name: v.name, aliases: [], kind: 'strength', equipment: v.equipment, targets: v.targets, image: null, custom: true,
+    }));
+    const mergeCustomLibrary = (library, places) => library
+      ? { ...library, exercises: [...(library.exercises || []), ...customEntries(places)] } : null;
+    const customExerciseName = (name) => String(name || '').split(':')[0].replace(/\(.*$/, '')
+      .replace(/(\s*(총\s*)?\d+(\.\d+)?\s*(세트|회|kg|km|분)\s*(수행)?)+\s*$/, '').trim().slice(0, 40);
+    // 운동 기록에서 근력 종목을 모은다(기록 하나에 같은 종목은 한 번만 센다). 자주 한 순서.
+    // exercise_meta가 없는 기록은 ingredients에서 사전에 있는 종목만 찾는다.
+    const collectRecordedExercises = (logs, index, minUnknown = 2) => {
+      const map = new Map();
+      for (const log of logs || []) {
+        const date = String(log?.log_date || log?.date || '');
+        const metaItems = Array.isArray(log?.exercise_meta?.items) ? log.exercise_meta.items : [];
+        const named = metaItems.length
+          ? metaItems.map(it => ({ name: it?.name, strength: it?.kind !== 'cardio' }))
+          : (Array.isArray(log?.ingredients) ? log.ingredients : []).map(name => ({ name, strength: false }));
+        const seen = new Set();
+        for (const { name, strength } of named) {
+          const norm = normalizeExerciseKey(name);
+          if (!norm || GENERIC_EXERCISE_KEYS.has(norm)) continue;
+          const entry = index ? index.get(norm) || null : null;
+          if (entry ? entry.kind !== 'strength' : !strength) continue;
+          const display = entry ? entry.name : customExerciseName(name);
+          if (!display) continue;
+          const key = entry ? entry.key : 'custom:' + display;
+          const dedupe = entry ? key : 'custom:' + norm;
+          if (seen.has(dedupe)) continue;
+          seen.add(dedupe);
+          const cur = map.get(dedupe) || { key, name: display, entry, count: 0, lastDate: '' };
+          cur.count += 1;
+          if (date > cur.lastDate) cur.lastDate = date;
+          map.set(dedupe, cur);
+        }
+      }
+      // 사전에 없는 이름은 두 번 이상 나온 것만(한 번뿐인 이름은 대개 "해당 없음", "최고 중량" 같은 설명 조각)
+      return [...map.values()].filter(r => r.entry || r.count >= minUnknown).sort((a, b) => b.count - a.count || b.lastDate.localeCompare(a.lastDate) || a.name.localeCompare(b.name));
+    };
+    // ★ v0.5.3 기록에서 찾은 새 운동: 사전에도 직접 추가 목록에도 없는 근력 이름(한 번 나온 것도).
+    // 설명 조각처럼 보이는 이름과 '운동 아님'으로 숨긴 이름은 뺀다.
+    // "코어 근육을 활용한 균형 잡기"처럼 조사·꾸밈말이 들어간 문장도 뺀다.
+    const NOT_EXERCISE_RE = /(해당\s*없|최고|최대|중량$|세션|적용|시간|합계|총계|기록|휴식|없음|[을를의](\s|$)|위한|통한|이용한|활용한)/;
+    const discoverExercises = (logs, index, places) => {
+      const ignored = new Set(places?.ignored || []);
+      return collectRecordedExercises(logs, index, 1)
+        .filter(r => !r.entry && r.name.length <= 20 && !NOT_EXERCISE_RE.test(r.name) && !ignored.has(r.key));
+    };
+
+    // ★ v0.5.4 헬스 기록 도우미 ─────────────────────────────────────────────
+    // 입력 방식: 무게×횟수(weight) / 횟수만(reps, 맨몸·철봉) / 초(hold, 버티기)
+    const HOLD_EXERCISE_KEYS = new Set(['plank', 'side-plank', 'wall-sit', 'dead-hang']);
+    const REPS_ONLY_KEYS = new Set(['captains-chair-leg-raise']);
+    const REPS_ONLY_EQUIPMENT = ['bodyweight', 'pullup_bar', 'parallel_bars', 'band', 'ab_wheel'];
+    const exerciseInputKind = (entry) => {
+      if (!entry) return 'weight';
+      if (HOLD_EXERCISE_KEYS.has(entry.key)) return 'hold';
+      if (entry.key === 'weighted-pull-up') return 'weight';
+      if (REPS_ONLY_KEYS.has(entry.key)) return 'reps'; // 기구 틀을 쓰지만 몸무게로 하는 종목
+      return REPS_ONLY_EQUIPMENT.includes(entry.equipment) ? 'reps' : 'weight';
+    };
+    // 쉬는 시간: 큰 종목 80초, 나머지 60초(사용자 결정 2026-11-25)
+    const BIG_LIFT_RE = /(squat|deadlift|bench-press|incline-press|decline|row|press|lunge|hip-thrust|rack-pull|good-morning|pull-up|chin-up|dips|step-up|split)/;
+    const SMALL_LIFT_RE = /(upright-row|calf|pushdown|kickback|raise|curl|fly|face-pull|shrug|crunch)/;
+    const REST_DEFAULT_BIG = 80;
+    const REST_DEFAULT_SMALL = 60;
+    const isBigLift = (entry) => { const key = String(entry?.key || ''); return BIG_LIFT_RE.test(key) && !SMALL_LIFT_RE.test(key); };
+    // 순서: 종목별로 정한 값 → 설정의 큰 종목/나머지 기본값 → 80/60
+    const restSecondsFor = (entry, places) => {
+      const own = places?.restByKey?.[entry?.key];
+      if (own) return own;
+      return isBigLift(entry) ? (places?.rest?.big || REST_DEFAULT_BIG) : (places?.rest?.small || REST_DEFAULT_SMALL);
+    };
+    const restSoundOn = (places) => places?.rest?.sound !== false;
+    const WEIGHT_STEP = 2.5;
+    const roundWeight = (w) => Math.round(Number(w) * 4) / 4;
+    // 기록에서 종목별 세트 이력(최근 것 먼저). exercise_meta의 세트 숫자가 있는 기록만.
+    const libraryKeyMap = (index) => new Map([...(index ? index.values() : [])].map(e => [e.key, e]));
+    const exerciseSetHistory = (logs, index) => {
+      const history = new Map();
+      const keyMap = libraryKeyMap(index);
+      for (const log of logs || []) {
+        const items = Array.isArray(log?.exercise_meta?.items) ? log.exercise_meta.items : [];
+        const date = String(log?.log_date || log?.date || '');
+        const location = log?.exercise_meta?.location || null;
+        const seen = new Set();
+        for (const item of items) {
+          if (!Array.isArray(item?.sets) || !item.sets.length) continue;
+          const entry = (item.key && keyMap.get(item.key)) || (index ? index.get(normalizeExerciseKey(item.name)) : null);
+          if (!entry || seen.has(entry.key)) continue;
+          seen.add(entry.key);
+          const list = history.get(entry.key) || [];
+          list.push({
+            date, time: String(log?.log_time || ''), location,
+            sets: item.sets.map(s => ({ weight: s.weight ?? null, reps: s.reps ?? null, seconds: s.seconds ?? null })),
+            // ★ v0.5.5 무게 올리기 판단용: 탭 기록인지, 평가, 실패 세트, 계획 세트 수
+            coach: log?.exercise_meta?.detailSource === 'coach', rating: log?.exercise_meta?.session?.rating || null,
+            failed: item.sets.some(s => s.failed), plannedSets: Number.isInteger(item.plannedSets) ? item.plannedSets : null,
+          });
+          history.set(entry.key, list);
+        }
+      }
+      history.forEach(list => list.sort((a, b) => `${b.date} ${b.time}`.localeCompare(`${a.date} ${a.time}`)));
+      return history;
+    };
+    // 지난번 기록: 바벨·덤벨·맨몸은 장소와 상관없이 가장 최근, 머신·케이블은 같은 장소를 먼저.
+    const pickLastSets = (history, entry, location) => {
+      const list = history?.get(entry?.key) || [];
+      if (!list.length) return null;
+      if (['machine', 'cable', 'smith'].includes(entry.equipment)) return list.find(h => h.location === location) || list[0];
+      return list[0];
+    };
+    // ★ 미리 채울 세트: 무게·횟수는 가장 최근 기록, 세트 수는 그 종목 최근 3번 중 가장 많이 한 수.
+    // 몇 세트만 한 날이 가장 최근이어도 다음 기본 세트 수가 줄지 않게 한다. 모자란 세트는 최근 기록의 마지막 세트로 채운다.
+    const PLANNED_SET_LOOKBACK = 3;
+    const plannedSetsFrom = (history, entry, location) => {
+      const last = pickLastSets(history, entry, location);
+      if (!last || !last.sets.length) return last;
+      const list = history?.get(entry?.key) || [];
+      const target = Math.max(last.sets.length, ...list.slice(0, PLANNED_SET_LOOKBACK).map(h => h.sets.length));
+      const sets = [...last.sets];
+      while (sets.length < target) sets.push({ ...last.sets[last.sets.length - 1] });
+      return { ...last, sets };
+    };
+    const emptySet = () => ({ weight: null, reps: null, seconds: null, done: false, failed: false });
+    const makeSessionItem = (entry, last, places) => ({
+      key: entry.key, name: entry.name, equipment: entry.equipment, targets: entry.targets || [],
+      input: exerciseInputKind(entry), restSec: restSecondsFor(entry, places),
+      last: last ? { date: last.date, location: last.location } : null,
+      lastBest: last ? Math.max(0, ...last.sets.map(s => Number(s.weight) || 0)) || null : null,
+      sets: last && last.sets.length
+        ? last.sets.map(s => ({ ...emptySet(), weight: s.weight, reps: s.reps, seconds: s.seconds }))
+        : [emptySet(), emptySet(), emptySet()],
+    });
+    // 최근 근력 운동 몇 번(빠른 시작 "최근 운동 그대로"): 날짜, 큰 부위 이름, 종목 key
+    const recentWorkoutSessions = (logs, index, limit = 3) => {
+      const out = [];
+      const keyMap = libraryKeyMap(index);
+      const sorted = [...(logs || [])].sort((a, b) => `${b.log_date} ${b.log_time || ''}`.localeCompare(`${a.log_date} ${a.log_time || ''}`));
+      for (const log of sorted) {
+        const items = Array.isArray(log?.exercise_meta?.items) ? log.exercise_meta.items : [];
+        const keys = [];
+        items.forEach(item => {
+          const entry = index ? index.get(normalizeExerciseKey(item?.name)) : null;
+          if (entry && entry.kind === 'strength' && !keys.includes(entry.key)) keys.push(entry.key);
+        });
+        if (!keys.length) continue;
+        const parts = [];
+        keys.forEach(k => {
+          const entry = keyMap.get(k);
+          const label = EXERCISE_PARTS.find(p => p.key === String(entry?.targets?.[0] || '').split('.')[0])?.label;
+          if (label && !parts.includes(label)) parts.push(label);
+        });
+        out.push({ date: String(log.log_date), keys, parts });
+        if (out.length >= limit) break;
+      }
+      return out;
+    };
+    // ★ v0.5.4 "최근 운동 그대로" 버튼: 부위별(팔은 이두·삼두로 나눔)과 전신.
+    // - 부위: 그 부위를 2종목 이상 한 가장 최근 날의 그 부위 종목만(없으면 1종목이라도 한 가장 최근 날)
+    // - 전신: 큰 부위를 4곳 이상 한 가장 최근 날의 종목 전체
+    // 종목은 첫 번째 부위로 나눈다(부위별 묶음과 같은 기준).
+    const SHORTCUT_GROUPS = [
+      { key: 'chest', label: '가슴' }, { key: 'back', label: '등' }, { key: 'shoulder', label: '어깨' },
+      { key: 'biceps', label: '이두' }, { key: 'triceps', label: '삼두' }, { key: 'legs', label: '하체' }, { key: 'core', label: '코어' },
+    ];
+    const FULL_BODY_MIN_PARTS = 4;
+    const shortcutGroupOf = (entry) => {
+      const [part, sub] = String(entry?.targets?.[0] || '').split('.');
+      if (part === 'arm') return sub === 'triceps' ? 'triceps' : 'biceps';
+      return SHORTCUT_GROUPS.some(g => g.key === part) ? part : null;
+    };
+    const recentWorkoutShortcuts = (logs, index) => {
+      const sessions = recentWorkoutSessions(logs, index, Infinity);
+      const keyMap = libraryKeyMap(index);
+      const parts = SHORTCUT_GROUPS.map(g => {
+        const withKeys = sessions.map(s => ({ date: s.date, keys: s.keys.filter(k => shortcutGroupOf(keyMap.get(k)) === g.key) })).filter(s => s.keys.length);
+        const pick = withKeys.find(s => s.keys.length >= 2) || withKeys[0];
+        return pick ? { key: g.key, label: g.label, date: pick.date, keys: pick.keys } : null;
+      }).filter(Boolean);
+      const full = sessions.find(s => s.parts.length >= FULL_BODY_MIN_PARTS) || null;
+      return { parts, full };
+    };
+    const formatSessionSet = (item, s) => {
+      if (item.input === 'hold') return s.seconds != null ? `${s.seconds}초` : '';
+      if (item.input === 'reps') return s.reps != null ? `${s.weight ? s.weight + 'kg×' : ''}${s.reps}회` : '';
+      if (s.weight == null && s.reps == null) return '';
+      return `${s.weight ?? 0}kg×${s.reps ?? 0}`;
+    };
+    const setHasValue = (item, s) => item.input === 'hold' ? s.seconds != null : (item.input === 'reps' ? s.reps != null : (s.weight != null && s.reps != null));
+    // 진행 중인 운동 → logs 한 줄. 체크한(done) 세트만 저장한다. 칼로리는 다루지 않는다.
+    const WORKOUT_PLACE_LABELS = { company: '회사', apartment: '아파트', home: '집' };
+    const buildWorkoutLog = (session, endedAtMs) => {
+      const items = (session.items || []).map(item => ({ ...item, doneSets: item.sets.filter(s => s.done && setHasValue(item, s)) }))
+        .filter(item => item.doneSets.length);
+      const startedMs = Date.parse(session.startedAt) || endedAtMs;
+      const minutes = Math.max(1, Math.round((endedAtMs - startedMs) / 60000));
+      const parts = [];
+      items.forEach(item => {
+        const label = EXERCISE_PARTS.find(p => p.key === String(item.targets?.[0] || '').split('.')[0])?.label;
+        if (label && !parts.includes(label)) parts.push(label);
+      });
+      const place = WORKOUT_PLACE_LABELS[session.location] || '';
+      const setCount = items.reduce((n, item) => n + item.doneSets.length, 0);
+      const heaviest = items.filter(i => i.input === 'weight').map(item => {
+        const best = item.doneSets.reduce((b, s) => (Number(s.weight) || 0) > (Number(b?.weight) || 0) ? s : b, null);
+        return best ? { item, best } : null;
+      }).filter(Boolean).sort((a, b) => (Number(b.best.weight) || 0) - (Number(a.best.weight) || 0))[0];
+      let bestText = '';
+      if (heaviest) {
+        const prev = Number(heaviest.item.lastBest);
+        const diff = Number.isFinite(prev) && prev > 0 ? roundWeight(Number(heaviest.best.weight) - prev) : null;
+        const diffText = diff == null ? '' : (diff === 0 ? ' (지난번과 같음)' : ` (지난번 ${diff > 0 ? '+' : ''}${diff}kg)`);
+        bestText = ` · ${heaviest.item.name} 최고 ${heaviest.best.weight}kg×${heaviest.best.reps}${diffText}`;
+      }
+      const ratingText = { easy: ' · 쉬웠어요', ok: ' · 적당했어요', hard: ' · 힘들었어요' }[session.rating] || '';
+      return {
+        category: '운동',
+        log_date: session.date,
+        log_time: `${session.time}:00`,
+        food_name: [place, parts.join('·'), `${minutes}분`].filter(Boolean).join(' · ').replace(/ · (\d+분)$/, ' $1'),
+        ingredients: items.map(item => `${item.name}: ${item.doneSets.map(s => formatSessionSet(item, s)).join(', ')}`),
+        analysis: `${parts.join('·') || '근력'} ${items.length}종목 ${setCount}세트${bestText}${ratingText}`,
+        is_alcohol: false,
+        raw_input: { type: 'coach', naturalText: '' },
+        exercise_meta: {
+          version: 2, detailVersion: 2, detailSource: 'coach', location: session.location || null,
+          session: {
+            startedAt: session.startedAt, endedAt: new Date(endedAtMs).toISOString(), minutes, rating: session.rating || null,
+            failedSets: items.reduce((n, item) => n + item.doneSets.filter(s => s.failed).length, 0),
+            skippedToday: (session.skippedToday || []).slice(0, 30),
+            ...(session.plan ? { plan: session.plan } : {}),
+          },
+          items: items.map(item => ({
+            name: item.name, key: item.key, kind: 'strength', targets: item.targets, source: 'coach', equipment: item.equipment, input: item.input,
+            // 계획했던 세트 수(체크 안 한 세트 포함). 일부러 덜 한 날을 다음 무게 판단에서 '실패'로 보지 않게 쓴다.
+            plannedSets: item.sets.length,
+            sets: item.doneSets.map(s => ({ weight: item.input === 'hold' ? null : (s.weight ?? null), unit: 'kg', reps: item.input === 'hold' ? null : (s.reps ?? null), seconds: item.input === 'hold' ? (s.seconds ?? null) : null, ...(s.failed ? { failed: true } : {}) })),
+          })),
+        },
+      };
+    };
+    // 탭에서 저장한 기록을 다시 고칠 때: 저장된 세트를 모두 '했음'으로 불러온다.
+    const sessionFromLog = (log, byKey) => {
+      const meta = log?.exerciseMeta || log?.exercise_meta || {};
+      return {
+        version: 1, stage: 'run', editLogId: log.id, location: meta.location || 'company',
+        startedAt: meta.session?.startedAt || new Date().toISOString(), editEndedAt: meta.session?.endedAt || null,
+        date: log.date || log.log_date, time: String(log.time || log.log_time || '').slice(0, 5), rating: meta.session?.rating || null,
+        skippedToday: [], rest: null,
+        items: (meta.items || []).map(item => {
+          const entry = byKey?.get(item.key) || null;
+          return {
+            key: item.key || ('custom:' + item.name), name: item.name, equipment: item.equipment || entry?.equipment || 'machine',
+            targets: item.targets || entry?.targets || [], input: item.input || exerciseInputKind(entry), restSec: restSecondsFor(entry || { key: item.key }), last: null,
+            sets: (item.sets || []).map(s => ({ weight: s.weight ?? null, reps: s.reps ?? null, seconds: s.seconds ?? null, done: true, failed: !!s.failed })),
+          };
+        }),
+      };
+    };
+    const isCoachLog = (log) => (log?.exerciseMeta || log?.exercise_meta)?.detailSource === 'coach';
+
+    // ★ v0.5.5 헬스 추천(규칙만, AI 없음) ─────────────────────────────────────
+    const BIG_RECOVERY_GROUPS = ['chest', 'back', 'legs'];
+    const RECOVERY_HOURS = { big: 48, small: 24, extra: 24 };
+    const HEAVY_DAY_SETS = 8;
+    const PAIR_GROUP = { chest: 'triceps', triceps: 'chest', back: 'biceps', biceps: 'back', legs: 'shoulder', shoulder: 'core', core: 'shoulder' };
+    const PAIR_MIN_MINUTES = 60;
+    // 시간: 기본 40분, −10/+10분으로 20~120분(사용자 결정 2026-11-26)
+    const RECO_DEFAULT_MINUTES = 40;
+    const RECO_MINUTES_STEP = 10;
+    const RECO_MIN_MINUTES = 20;
+    const RECO_MAX_MINUTES = 120;
+    const CARDIO_WEEKLY_GOAL_MIN = 90;
+    const SUPPLEMENT_WINDOW_DAYS = 28;
+    const logDateTimeMs = (log) => {
+      const t = String(log?.log_time || '12:00').slice(0, 5) || '12:00';
+      return Date.parse(`${log?.log_date}T${t}:00`);
+    };
+    const dayDiff = (fromDate, toDate) => Math.round((Date.parse(toDate + 'T00:00:00') - Date.parse(fromDate + 'T00:00:00')) / 86400000);
+    // 부위 상태: 마지막으로 한 때, 며칠 전, 회복 중인지. 큰 부위 48시간·작은 부위 24시간, 그날 8세트 이상이거나 '힘들었어요'면 24시간 더.
+    const recoveryStatus = (logs, index, nowMs, today) => {
+      const keyMap = libraryKeyMap(index);
+      const last = {};
+      for (const log of logs || []) {
+        const items = Array.isArray(log?.exercise_meta?.items) ? log.exercise_meta.items : [];
+        const perGroup = {};
+        items.forEach(item => {
+          const entry = (item?.key && keyMap.get(item.key)) || (index ? index.get(normalizeExerciseKey(item?.name)) : null);
+          if (!entry || entry.kind !== 'strength') return;
+          const g = shortcutGroupOf(entry);
+          if (!g) return;
+          perGroup[g] = (perGroup[g] || 0) + (Array.isArray(item.sets) && item.sets.length ? item.sets.length : 3);
+        });
+        const at = logDateTimeMs(log);
+        Object.entries(perGroup).forEach(([g, sets]) => {
+          if (!last[g] || at > last[g].at) last[g] = { at, date: String(log.log_date), sets, hard: log?.exercise_meta?.session?.rating === 'hard' };
+        });
+      }
+      return SHORTCUT_GROUPS.map(g => {
+        const l = last[g.key];
+        if (!l) return { key: g.key, label: g.label, date: null, days: null, ready: true };
+        const limit = (BIG_RECOVERY_GROUPS.includes(g.key) ? RECOVERY_HOURS.big : RECOVERY_HOURS.small) + (l.sets >= HEAVY_DAY_SETS || l.hard ? RECOVERY_HOURS.extra : 0);
+        const hours = (nowMs - l.at) / 3600000;
+        return { key: g.key, label: g.label, date: l.date, days: dayDiff(l.date, today), ready: hours >= limit, readyInHours: Math.max(0, Math.ceil(limit - hours)) };
+      });
+    };
+    // 어제까지 며칠 연속 운동했는지(오늘 제외)
+    const consecutiveWorkoutDays = (logs, today) => {
+      const days = new Set((logs || []).map(l => String(l.log_date)));
+      let n = 0;
+      for (let i = 1; i <= 14; i++) {
+        const d = new Date(Date.parse(today + 'T00:00:00') - i * 86400000);
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        if (!days.has(key)) break;
+        n++;
+      }
+      return n;
+    };
+    // 오늘 할 부위: 준비된 부위 중 가장 오래 안 한 한 곳(안 한 적 없는 부위는 맨 뒤). 60분 이상이면 짝 부위를 더한다.
+    const chooseFocusGroups = (status, minutes) => {
+      const score = (s) => s.days == null ? -1 : s.days;
+      const ready = status.filter(s => s.ready && s.days != null).sort((a, b) => score(b) - score(a));
+      const pool = ready.length ? ready : [...status].filter(s => s.days != null).sort((a, b) => (a.readyInHours || 0) - (b.readyInHours || 0));
+      const first = pool[0]?.key || 'chest';
+      const groups = [first];
+      if (minutes >= PAIR_MIN_MINUTES) {
+        const pair = PAIR_GROUP[first];
+        if (pair && status.find(s => s.key === pair)?.ready === true) groups.push(pair);
+      }
+      const longRested = status.filter(s => s.ready && s.days != null && s.days >= 5);
+      return { groups, fullBodyCandidate: longRested.length >= 4 };
+    };
+    // 무게 올림 단계: 바벨·스미스 2.5kg, 덤벨(한 손) 회사 2kg·아파트 1kg, 머신·케이블 5kg, 케틀벨 4kg
+    const weightStepFor = (entry, location) => {
+      if (entry?.equipment === 'dumbbell') return location === 'apartment' ? 1 : 2;
+      if (['machine', 'cable'].includes(entry?.equipment)) return 5;
+      if (entry?.equipment === 'kettlebell') return 4;
+      return 2.5;
+    };
+    const roundToStep = (w, step) => Math.max(0, Math.round(Number(w) / step) * step);
+    // 오늘 세트 기본값과 이유: 올림(up) / 유지(hold) / 낮춤(down) / 처음(new)
+    const progressSets = (history, entry, location, { alcohol = false } = {}) => {
+      const planned = plannedSetsFrom(history, entry, location);
+      if (!planned || !planned.sets.length) return { sets: null, change: 'new', reason: '처음 하는 종목' };
+      const list = history.get(entry.key) || [];
+      const last = list[0];
+      const input = exerciseInputKind(entry);
+      let sets = planned.sets.map(s => ({ ...s }));
+      let change = 'hold'; let reason = '지난번 그대로';
+      const hardTwice = list.length >= 2 && list[0].rating === 'hard' && list[1].rating === 'hard';
+      if (alcohol) { change = 'hold'; reason = '어제 음주 · 무게 유지, 세트 1개 줄임'; }
+      else if (hardTwice) { change = 'down'; reason = '"힘들었어요" 두 번 연속 · 약 10% 낮춤'; }
+      else if (!last.coach) { reason = '지난번 그대로(예전 기록이라 평가 없음)'; }
+      else if (last.failed) { reason = '지난번 실패 세트가 있어 유지'; }
+      else if (last.plannedSets != null && last.sets.length < last.plannedSets) { reason = '지난번 덜 해서 유지'; }
+      else if (last.rating === 'hard') { reason = '지난번 힘들었어요 · 유지'; }
+      else { change = 'up'; reason = '지난번 다 성공'; }
+      if (change === 'up') {
+        if (input === 'weight') { const step = weightStepFor(entry, location); sets = sets.map(s => ({ ...s, weight: roundWeight((Number(s.weight) || 0) + step) })); reason += ` · +${step}kg`; }
+        else if (input === 'reps') { sets = sets.map(s => ({ ...s, reps: (Number(s.reps) || 0) + 1 })); reason += ' · +1회'; }
+        else { sets = sets.map(s => ({ ...s, seconds: (Number(s.seconds) || 0) + 5 })); reason += ' · +5초'; }
+      }
+      if (change === 'down' && input === 'weight') {
+        const step = weightStepFor(entry, location);
+        sets = sets.map(s => ({ ...s, weight: roundToStep((Number(s.weight) || 0) * 0.9, step) }));
+      }
+      if (alcohol && sets.length > 1) sets = sets.slice(0, -1);
+      return { sets, change, reason };
+    };
+    // 부위 종목 고르기: 그 장소 목록에서, 최근 8주에 자주 한 순 → 큰 종목 먼저 → 세부 부위가 겹치지 않게.
+    const pickGroupExercises = (group, placeKeys, keyMap, history, exclude, today) => {
+      const freq = (key) => (history.get(key) || []).filter(h => dayDiff(h.date, today) <= 56).length;
+      const cands = placeKeys.filter(k => !exclude.includes(k) && shortcutGroupOf(keyMap.get(k)) === group)
+        .map(k => ({ key: k, entry: keyMap.get(k), freq: freq(k) }))
+        .sort((a, b) => b.freq - a.freq || (isBigLift(b.entry) ? 1 : 0) - (isBigLift(a.entry) ? 1 : 0) || a.entry.name.localeCompare(b.entry.name));
+      // 최근에 한 종목 안에서만 세부 부위를 고르게 섞고, 8주간 안 한 종목은 맨 뒤에 둔다.
+      const usedSubs = new Set(); const first = []; const rest = []; const unused = [];
+      cands.forEach(c => {
+        if (!c.freq) { unused.push(c.key); return; }
+        const sub = c.entry.targets?.[0];
+        if (!usedSubs.has(sub)) { usedSubs.add(sub); first.push(c.key); } else rest.push(c.key);
+      });
+      return [...first, ...rest, ...unused];
+    };
+    const estimateItemMinutes = (setCount, restSec) => setCount * (1 + restSec / 60);
+    // 최근 4주 0~1회인 세부 부위 하나와 그 장소에서 할 종목(바벨·덤벨 먼저)
+    const supplementSuggestion = (logs, index, placeKeys, keyMap, today, exclude) => {
+      const counts = {};
+      (logs || []).filter(l => dayDiff(String(l.log_date), today) <= SUPPLEMENT_WINDOW_DAYS).forEach(log => {
+        const items = Array.isArray(log?.exercise_meta?.items) ? log.exercise_meta.items : [];
+        const seen = new Set();
+        items.forEach(item => {
+          const entry = (item?.key && keyMap.get(item.key)) || (index ? index.get(normalizeExerciseKey(item?.name)) : null);
+          (entry?.targets || item?.targets || []).forEach(t => { if (String(t).includes('.') && !seen.has(t)) { seen.add(t); counts[t] = (counts[t] || 0) + 1; } });
+        });
+      });
+      const subs = EXERCISE_PARTS.flatMap(p => p.subs.map(([k, label]) => ({ target: `${p.key}.${k}`, label: `${p.label}·${label}`, count: counts[`${p.key}.${k}`] || 0 })))
+        .filter(s => s.count <= 1).sort((a, b) => a.count - b.count);
+      const pref = (e) => ['dumbbell', 'barbell'].includes(e.equipment) ? 0 : 1;
+      for (const s of subs) {
+        const key = placeKeys.filter(k => !exclude.includes(k) && (keyMap.get(k)?.targets || []).includes(s.target))
+          .sort((a, b) => pref(keyMap.get(a)) - pref(keyMap.get(b)))[0];
+        if (key) return { key, target: s.target, label: s.label, count: s.count };
+      }
+      return null;
+    };
+    // 이번 주(월~일) 유산소 분
+    const weeklyCardioMinutes = (logs, today) => {
+      const d = new Date(Date.parse(today + 'T00:00:00'));
+      const monday = new Date(d.getTime() - ((d.getDay() + 6) % 7) * 86400000);
+      const mondayStr = `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`;
+      let minutes = 0;
+      (logs || []).filter(l => String(l.log_date) >= mondayStr && String(l.log_date) <= today).forEach(log => {
+        (log?.exercise_meta?.items || []).forEach(item => { if (item?.kind === 'cardio' && Number(item.minutes) > 0) minutes += Number(item.minutes); });
+      });
+      return Math.round(minutes);
+    };
+    // 오늘의 추천 전체. yesterday = { alcohol, lateNight }
+    // ★ v0.5.6 한 줄 입력을 규칙으로 먼저 읽는다(AI 없이). 하나도 못 읽으면 matched=false → 화면이 AI에게 묻는다.
+    // 아프다는 말이 붙은 구절의 부위는 '뺄 부위(avoid)', 나머지 부위는 오늘 할 부위(groups).
+    const WORKOUT_TEXT_PARTS = [
+      [/가슴|흉근|벤치/, ['chest']], [/등(?!산)|광배|턱걸이|풀업|로우|허리/, ['back']], [/어깨|삼각근/, ['shoulder']],
+      [/이두/, ['biceps']], [/삼두/, ['triceps']], [/팔(?!꿈)|팔뚝/, ['biceps', 'triceps']],
+      [/하체|다리|허벅지|엉덩이|종아리|스쿼트|무릎/, ['legs']], [/코어|복근|옆구리|뱃살|배(?!고)/, ['core']],
+    ];
+    const WORKOUT_PAIN_RE = /(아파(?!트)|아프|아픈|아픔|통증|불편|다쳐|다친|삐끗|결려|결림|쑤셔|저려)/;
+    const parseWorkoutText = (text) => {
+      const t = String(text || '').trim().slice(0, 100);
+      const out = { groups: [], avoid: [] };
+      if (!t) return { ...out, matched: false };
+      const hour = /(한|1)\s*시간\s*(반)?/.exec(t);
+      const min = /(\d{2,3})\s*분/.exec(t);
+      let minutes = null;
+      if (min) minutes = Number(min[1]);
+      else if (hour) minutes = hour[2] ? 90 : 60;
+      if (minutes != null) out.minutes = Math.min(RECO_MAX_MINUTES, Math.max(RECO_MIN_MINUTES, Math.round(minutes / 10) * 10));
+      if (/(피곤|힘들|졸려|졸리|지쳐|지침|몸이\s*무거|숙취|잠을?\s*못|컨디션\s*(안|별로|나빠|나쁨))/.test(t)) out.condition = 'tired';
+      else if (/(컨디션\s*(좋|최고)|쌩쌩|가뿐|개운)/.test(t)) out.condition = 'good';
+      if (/회사/.test(t)) out.place = 'company';
+      else if (/아파트/.test(t)) out.place = 'apartment';
+      t.split(/[,.!?·]|그리고|데\s|지만|고\s/).forEach(clause => {
+        const pain = WORKOUT_PAIN_RE.test(clause);
+        WORKOUT_TEXT_PARTS.forEach(([re, groups]) => {
+          if (!re.test(clause)) return;
+          groups.forEach(g => { const list = pain ? out.avoid : out.groups; if (!list.includes(g)) list.push(g); });
+        });
+      });
+      out.groups = out.groups.filter(g => !out.avoid.includes(g));
+      const matched = out.minutes != null || !!out.condition || !!out.place || out.groups.length > 0 || out.avoid.length > 0;
+      return { ...out, matched };
+    };
+    // ★ v0.5.6 종목 부위가 뺄 부위에 걸리는지(첫 번째 부위뿐 아니라 쓰는 부위 전부를 본다)
+    const targetGroupOf = (t) => { const [part, sub] = String(t || '').split('.'); return part === 'arm' ? (sub === 'triceps' ? 'triceps' : 'biceps') : part; };
+    const touchesAvoided = (entry, avoid) => !!avoid?.length && (entry?.targets || []).some(t => avoid.includes(targetGroupOf(t)));
+    const placesKeyEntries = (places, location, keyMap) => Object.fromEntries((places?.[location] || []).filter(k => keyMap.has(k)).map(k => [k, true]));
+    const buildRecommendation = ({ logs, index, places, location, minutes = RECO_DEFAULT_MINUTES, condition = 'normal', groups: forcedGroups = null, yesterday = {}, nowMs, today, skip = [], avoid = [] }) => {
+      const keyMap = libraryKeyMap(index);
+      const history = exerciseSetHistory(logs, index);
+      const status = recoveryStatus(logs, index, nowMs, today);
+      const focus = chooseFocusGroups(status.filter(st => !avoid.includes(st.key)), minutes);
+      const groups = (forcedGroups && forcedGroups.length ? forcedGroups : focus.groups).filter(g => !avoid.includes(g));
+      const avoidKeys = Object.keys(placesKeyEntries(places, location, keyMap)).filter(k => touchesAvoided(keyMap.get(k), avoid));
+      const placeKeys = places?.[location] || [];
+      const tired = condition === 'tired';
+      // 피곤하면 세트를 1개씩 줄이고 시간도 25% 덜 쓴다(종목이 늘어나지 않게).
+      const budget = tired ? minutes * 0.75 : minutes;
+      const items = [];
+      let used = 0;
+      const queues = groups.map(g => pickGroupExercises(g, placeKeys, keyMap, history, [...skip, ...avoidKeys], today));
+      // 첫 부위 2개 : 짝 부위 1개 비율로 번갈아 채운다
+      const order = [];
+      for (let round = 0; round < 12; round++) {
+        queues.forEach((q, gi) => { const take = gi === 0 ? 2 : 1; for (let t = 0; t < take; t++) { const k = q.shift(); if (k) order.push(k); } });
+      }
+      for (const key of order) {
+        const entry = keyMap.get(key);
+        const p = progressSets(history, entry, location, { alcohol: !!yesterday.alcohol });
+        let sets = p.sets || [emptySet(), emptySet(), emptySet()].map(s => ({ weight: s.weight, reps: s.reps, seconds: s.seconds }));
+        if (tired && sets.length > 2) sets = sets.slice(0, -1);
+        const restSec = restSecondsFor(entry, places);
+        const cost = estimateItemMinutes(sets.length, restSec);
+        if (items.length >= 1 && used + cost > budget) break;
+        used += cost;
+        items.push({ key, sets, change: p.change, reason: p.reason + (tired && p.sets && p.sets.length > 2 ? ' · 피곤해서 세트 1개 줄임' : '') });
+      }
+      const supplement = supplementSuggestion(logs, index, placeKeys, keyMap, today, [...items.map(i => i.key), ...avoidKeys]);
+      let supplementItem = null;
+      if (supplement) {
+        const entry = keyMap.get(supplement.key);
+        const p = progressSets(history, entry, location, { alcohol: !!yesterday.alcohol });
+        supplementItem = { key: supplement.key, sets: (p.sets || [emptySet(), emptySet()]).slice(0, 3), change: p.change, reason: `편식 보충 · ${supplement.label} 4주간 ${supplement.count}회`, supplement: true };
+      }
+      return {
+        status, groups, autoGroups: focus.groups, fullBodyCandidate: focus.fullBodyCandidate,
+        restSuggest: consecutiveWorkoutDays(logs, today) >= 3,
+        items, supplement: supplementItem, minutesPlanned: Math.round(used),
+        cardio: { minutes: weeklyCardioMinutes(logs, today), goal: CARDIO_WEEKLY_GOAL_MIN },
+        alcohol: !!yesterday.alcohol, lateNight: !!yesterday.lateNight, avoid: [...avoid],
+      };
+    };
+    // 처음 설정에서 고른 값을 장소 목록으로. 기록에 없는 종목(직접 추가한 것)은 그대로 둔다.
+    const applyPlaceChoices = (places, records, choices) => {
+      const base = places || emptyWorkoutPlaces();
+      const recordKeys = new Set(records.map(r => r.key));
+      const pick = (place) => records.filter(r => [place, 'both'].includes(choices[r.key] || 'both')).map(r => r.key);
+      return {
+        ...base,
+        company: [...base.company.filter(k => !recordKeys.has(k)), ...pick('company')],
+        apartment: [...base.apartment.filter(k => !recordKeys.has(k)), ...pick('apartment')],
+        setupDone: true,
+      };
+    };
+    const choiceFromPlaces = (places, key) => {
+      const inCompany = !!places?.company?.includes(key);
+      const inApartment = !!places?.apartment?.includes(key);
+      return inCompany && inApartment ? 'both' : (inCompany ? 'company' : (inApartment ? 'apartment' : 'none'));
+    };
+    // 집: 맨몸 종목 + 고른 장비로 하는 종목.
+    const homeExercisesFor = (library, equipment) => (library?.exercises || []).filter(e =>
+      e.kind === 'strength' && (e.equipment === 'bodyweight' || (equipment || []).includes(e.equipment)));
+    const placeExerciseName = (key, byKey) => byKey?.get(key)?.name || (String(key).startsWith('custom:') ? String(key).slice(7) : key);
+    // 사전 검색: 이름·별칭에 들어 있으면(띄어쓰기 무시) 근력 종목만.
+    const searchExerciseLibrary = (library, query, exclude, target) => {
+      const q = String(query || '').toLowerCase().replace(/[\s·\-_]/g, '');
+      return (library?.exercises || []).filter(e => e.kind === 'strength' && !(exclude || []).includes(e.key)
+        && (!q || [e.name, ...(e.aliases || [])].some(n => String(n).toLowerCase().replace(/[\s·\-_]/g, '').includes(q)))
+        && (!target || (e.targets || []).includes(target)));
+    };
+    // 부위별 묶음: 종목의 첫 번째 부위로 묶는다(가슴·등·어깨·팔·하체·코어, 사전에 없으면 기타). 빈 묶음은 뺀다.
+    const groupExercisesByPart = (items, entryOf) => {
+      const groups = [...EXERCISE_PARTS.map(p => ({ key: p.key, label: p.label, items: [] })), { key: 'other', label: '기타', items: [] }];
+      (items || []).forEach(item => {
+        const part = String(entryOf(item)?.targets?.[0] || '').split('.')[0];
+        (groups.find(g => g.key === part) || groups[groups.length - 1]).items.push(item);
+      });
+      return groups.filter(g => g.items.length);
+    };
+    // 이름 옆에 붙이는 짧은 부위: 세부 부위가 있으면 세부(윗가슴), 없으면 큰 부위(하체).
+    const shortTargetLabels = (entry) => [...new Set((entry?.targets || []).map(t => {
+      const [part, sub] = String(t).split('.');
+      const def = EXERCISE_PARTS.find(p => p.key === part);
+      if (!def) return null;
+      return (sub && (def.subs.find(([k]) => k === sub) || [])[1]) || def.label;
+    }).filter(Boolean))];
+    // 이 종목들로는 쓰지 않는 세부 부위(편식 보충 추천에 필요한 종목이 장소에 있는지 미리 알려준다).
+    const missingSubParts = (entries) => {
+      const covered = new Set((entries || []).flatMap(e => e?.targets || []));
+      return EXERCISE_PARTS.flatMap(p => p.subs.filter(([k]) => !covered.has(`${p.key}.${k}`))
+        .map(([k, label]) => ({ target: `${p.key}.${k}`, part: p.label, label })));
+    };
+
     // ★ v0.3.8 항목별 근거(entries)도 함께 모아 카드에서 펼쳐 볼 수 있게 한다.
     const summarizeHealthTags = (items) => {
       const groups = new Map();
@@ -561,6 +1236,64 @@
     }
 
     // 건강식품 기록 아래: 포장 표시 기능성, 궁합 목록, 접어 둔 AI 참고.
+    // ★ v0.5.1 종목 설명 창: 부위·장비, 시작/끝 자세 그림(1초마다 번갈아), 하는 법, 조심할 점, 쉬운/어려운 버전
+    function ExerciseInfoSheet({ entry, library, onClose }) {
+      const [frame, setFrame] = useState(0);
+      const [imageFailed, setImageFailed] = useState(false);
+      useEffect(() => {
+        setFrame(0); setImageFailed(false);
+        if (!entry?.image) return undefined;
+        const timer = setInterval(() => setFrame(f => (f + 1) % 2), 1000);
+        return () => clearInterval(timer);
+      }, [entry?.key]);
+      if (!entry) return null;
+      const parts = exerciseTargetLabels(entry.targets);
+      const equipment = library?.equipmentLabels?.[entry.equipment];
+      const youtube = `https://www.youtube.com/results?search_query=${encodeURIComponent(entry.name + ' 자세')}`;
+      return (
+        <div className="fixed inset-0 z-[110] bg-black/50 flex items-end sm:items-center justify-center" onClick={onClose} data-exercise-info>
+          <div className="bg-white w-full max-w-md rounded-t-3xl sm:rounded-3xl p-6 max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-3 mb-2">
+              <h2 className="text-lg font-bold text-gray-800 leading-snug">{entry.name}</h2>
+              <button type="button" onClick={onClose} aria-label="닫기" className="shrink-0 w-8 h-8 rounded-full bg-gray-100 text-gray-500 font-bold">✕</button>
+            </div>
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              {equipment && <span className="text-[11px] font-bold px-2 py-1 rounded-lg bg-gray-100 text-gray-600">{equipment}</span>}
+              {parts.map(p => <span key={p} className="text-[11px] font-bold px-2 py-1 rounded-lg bg-green-50 text-green-700">{p}</span>)}
+            </div>
+            {entry.image && !imageFailed && (
+              <figure className="mb-3">
+                <img src={`${library?.imageBase || ''}${entry.image}/${frame}.jpg`} alt={`${entry.name} ${frame === 0 ? '시작' : '끝'} 자세`}
+                  onError={() => setImageFailed(true)} className="w-full h-48 object-contain rounded-2xl bg-gray-50" />
+                <figcaption className="text-[10px] text-gray-400 mt-1">{frame === 0 ? '시작 자세' : '끝 자세'} · {library?.imageCredit}</figcaption>
+              </figure>
+            )}
+            <p className="text-sm text-gray-700 leading-relaxed mb-4">{entry.summary}</p>
+            <h3 className="text-xs font-bold text-gray-500 mb-1.5">하는 법</h3>
+            <ol className="list-decimal pl-5 space-y-1 text-sm text-gray-700 leading-relaxed mb-4">
+              {(entry.steps || []).map((s, i) => <li key={i}>{s}</li>)}
+            </ol>
+            {(entry.mistakes || []).length > 0 && (
+              <>
+                <h3 className="text-xs font-bold text-amber-700 mb-1.5">이것만 조심</h3>
+                <ul className="list-disc pl-5 space-y-1 text-sm text-gray-700 leading-relaxed mb-4">
+                  {entry.mistakes.map((s, i) => <li key={i}>{s}</li>)}
+                </ul>
+              </>
+            )}
+            {(entry.easier || entry.harder) && (
+              <div className="grid grid-cols-2 gap-2 mb-4 text-xs">
+                <div className="bg-gray-50 rounded-xl p-3"><p className="font-bold text-gray-500 mb-1">쉽게 하려면</p><p className="text-gray-700">{entry.easier || '-'}</p></div>
+                <div className="bg-gray-50 rounded-xl p-3"><p className="font-bold text-gray-500 mb-1">더 어렵게</p><p className="text-gray-700">{entry.harder || '-'}</p></div>
+              </div>
+            )}
+            <a href={youtube} target="_blank" rel="noopener noreferrer" className="block text-center text-sm font-bold text-red-600 bg-red-50 rounded-xl py-3">▶ 유튜브에서 자세 영상 찾기</a>
+            {entry.review && <p className="text-[11px] text-amber-700 mt-3 leading-relaxed">이 설명은 아직 확인 중이에요. 실제로 한 운동과 다르면 알려주세요.</p>}
+          </div>
+        </div>
+      );
+    }
+
     function SupplementInfoBox({ log, dayLogs }) {
       const [open, setOpen] = useState(false);
       if (!isSupplementLog(log)) return null;
@@ -677,6 +1410,24 @@
       return { due, done, rate: rate({ due, done }), perItem, medicine: byKind('medicine'), supplement: byKind('supplement') };
     }
 
+    // ★ v0.4.7 기간(start~end) 복용 체크 수. 오늘 이후는 빼고, 오늘은 체크한 것만, 등록 전 날짜는 체크가 있을 때만 센다.
+    function intakeRangeCounts(items, checks, start, end, today, kind) {
+      const kindItems = (items || []).filter(i => i.kind === kind);
+      let due = 0, done = 0;
+      const last = end < today ? end : today;
+      for (let d = parseDate(start); formatDate(d) <= last; d.setDate(d.getDate() + 1)) {
+        const date = formatDate(d);
+        intakeDueRows(kindItems, date).forEach(({ item, slot }) => {
+          const checked = Boolean(checks[intakeCheckKey(item.id, date, slot)]);
+          if (date === today && !checked) return;
+          const registered = intakeRegisteredDate(item);
+          if (registered && date < registered && !checked) return;
+          due++; if (checked) done++;
+        });
+      }
+      return { due, done, rate: due ? Math.round(done / due * 100) : null };
+    }
+
     // ★ v0.4.5 루틴 "복용 체크를 다 하면 자동 완료": 루틴 시간대(아침·점심·저녁·자기 전)의 등록 항목을 모두 체크했으면 완료.
     // 그 밖의 시간대·언제든 루틴은 그날 전체. 그날 먹을 등록 항목이 없으면 사진·글 건강식품 기록이 있을 때 완료.
     function intakeRoutineAutoDone(routine, date, items, checks, hasSupplementLog) {
@@ -705,92 +1456,176 @@
       );
     }
 
+    // ★ v0.4.8 시간대가 끝나는 시각(이후에 체크하면 "늦게 체크"로 보고 시각을 확인하게 한다). 자기 전은 하루 끝까지.
+    const INTAKE_SLOT_END_HOUR = { morning: 11, lunch: 15, evening: 21, bedtime: 24 };
+    function isIntakeSlotPast(slot, isToday, now = new Date()) {
+      if (!isToday) return true;
+      return now.getHours() >= (INTAKE_SLOT_END_HOUR[slot] ?? 24);
+    }
+
     // 홈 💊 복용 버튼: 오늘 체크 목록
-    function IntakeSheet({ items, checks, date, isToday, dayLogs, adherence, showAck, onAck, onToggle, onOpenManager, onRecordOther, onClose }) {
-      // ★ v0.4.6 식사 기록처럼 창 위에 "먹은 시각" 칸. 오늘은 지금 시각, 지난 날짜는 비워 두면 시간대 기본 시각.
-      // 바꾼 시각은 창을 닫을 때까지 모든 체크에 쓰이고, 창을 다시 열면 처음 값으로 돌아간다.
-      const [sheetTime, setSheetTime] = useState(isToday ? getCurrentTimeStr() : '');
+    // ★ v0.4.8 시간대별 묶음. 체크는 늘 "지금"(지난 날짜는 시간대 기본 시각)으로 하고,
+    // 체크한 직후 아래 알림에서 시각을 바로 고친다. 체크한 줄을 누르면 시각 바꾸기·이 시간대 모두·체크 취소 메뉴.
+    function IntakeSheet({ items, checks, date, isToday, dayLogs, adherence, showAck, onAck, onCheck, onUncheck, onRetime, onOpenManager, onRecordOther, onClose }) {
+      const [toast, setToast] = useState(null); // { slot, targets, time, late, editing, editTime }
+      const [menuKey, setMenuKey] = useState(null);
+      const [menuEdit, setMenuEdit] = useState(null); // 메뉴에서 고르는 시각
+      const toastTimer = useRef(null);
+      useEffect(() => () => clearTimeout(toastTimer.current), []);
+      const validTime = (t) => /^\d{2}:\d{2}$/.test(t || '');
       const rows = intakeDueRows(items, date);
-      const meds = rows.filter(r => r.item.kind === 'medicine');
-      const supps = rows.filter(r => r.item.kind === 'supplement');
+      const isChecked = ({ item, slot }) => Boolean(checks[intakeCheckKey(item.id, date, slot)]);
+      const timeOf = ({ item, slot }) => String(checks[intakeCheckKey(item.id, date, slot)]?.taken_time || '').slice(0, 5);
+      const groups = INTAKE_SLOTS.map(s => ({ ...s, rows: rows.filter(r => r.slot === s.key) })).filter(g => g.rows.length);
       const supplementLogs = [...(dayLogs || []).filter(isSupplementLog), ...intakeSupplementLogs(items, checks, date)];
       const pairNotes = [];
       supplementLogs.forEach(log => supplementPairNotes(log, supplementLogs).forEach(note => {
         if (!pairNotes.some(n => n.text === note.text)) pairNotes.push(note);
       }));
-      const renderRow = ({ item, slot }) => {
-        const check = checks[intakeCheckKey(item.id, date, slot)];
+
+      const showToast = (next) => {
+        clearTimeout(toastTimer.current);
+        setToast(next);
+        // 늦게 체크한 경우는 사용자가 닫을 때까지 둔다. 제때 체크한 경우만 잠깐 보였다 사라진다.
+        if (next && !next.late) toastTimer.current = setTimeout(() => setToast(t => (t && !t.editing ? null : t)), 6000);
+      };
+      const check = async (targets, slot) => {
+        setMenuKey(null);
+        const time = await onCheck(targets);
+        if (!time) return;
+        showToast({ slot, targets, time, late: isIntakeSlotPast(slot, isToday), editing: false, editTime: time });
+      };
+      const applyToastTime = async () => {
+        if (!toast || !validTime(toast.editTime)) return;
+        await onRetime(toast.targets, toast.editTime);
+        showToast({ ...toast, time: toast.editTime, late: false, editing: false });
+      };
+
+      const renderRow = (row) => {
+        const { item, slot } = row;
+        const key = item.id + '|' + slot;
+        const checked = isChecked(row);
+        const time = timeOf(row);
         const tips = intakeTipsFor(item);
-        const time = String(check?.taken_time || '').slice(0, 5);
+        const open = menuKey === key;
         return (
-          <div key={item.id + slot} className={`flex items-center gap-2 rounded-2xl pl-3 pr-2 py-2.5 border transition ${check ? 'bg-violet-50 border-violet-200' : 'bg-white border-gray-200'}`} data-intake-row>
-            <button type="button" onClick={() => onToggle(item, slot, sheetTime)} aria-label={`${item.name} ${intakeSlotLabel(slot)} ${check ? '체크 취소' : '체크'}`}
-              className="min-w-0 flex-1 flex items-center gap-3 text-left active:scale-[0.99]">
-              <span className={`w-6 h-6 rounded-full border-2 shrink-0 flex items-center justify-center text-xs font-bold ${check ? 'bg-violet-500 border-violet-500 text-white' : 'border-violet-300'}`}>{check ? '✓' : ''}</span>
+          <div key={key} className={`rounded-2xl border transition ${checked ? 'bg-violet-50 border-violet-200' : 'bg-white border-gray-200'}`} data-intake-row>
+            <button type="button" aria-label={`${item.name} ${intakeSlotLabel(slot)} ${checked ? '메뉴' : '체크'}`}
+              onClick={() => { if (checked) { setMenuKey(open ? null : key); setMenuEdit(time); } else check([row], slot); }}
+              className="w-full flex items-center gap-3 px-3 py-2.5 text-left active:scale-[0.99]">
+              <span className={`w-6 h-6 rounded-full border-2 shrink-0 flex items-center justify-center text-xs font-bold ${checked ? 'bg-violet-500 border-violet-500 text-white' : 'border-violet-300'}`}>{checked ? '✓' : ''}</span>
               <span className="min-w-0 flex-1">
-                <span className={`block text-sm font-bold break-keep ${check ? 'text-violet-800' : 'text-gray-800'}`}>{item.name}{item.dose && <span className="font-normal text-gray-500"> {item.dose}</span>}</span>
-                <span className="block text-[11px] text-gray-400 break-keep">{intakeSlotLabel(slot)}{item.note ? ` · ${item.note}` : ''}</span>
+                <span className={`block text-sm font-bold break-keep ${checked ? 'text-violet-800' : 'text-gray-800'}`}>
+                  {item.name}{item.dose && <span className="font-normal text-gray-500"> {item.dose}</span>}
+                  <span className={`ml-1.5 align-middle text-[10px] font-bold px-1.5 py-0.5 rounded ${item.kind === 'medicine' ? 'bg-sky-50 text-sky-700' : 'bg-emerald-50 text-emerald-700'}`}>{item.kind === 'medicine' ? '💊 약' : '🌿 건강식품'}</span>
+                </span>
+                {item.note && <span className="block text-[11px] text-gray-400 break-keep">{item.note}</span>}
                 {tips.map((tip, i) => <span key={i} className="block text-[11px] text-emerald-700 break-keep" data-intake-tip>🕗 {tip}</span>)}
               </span>
+              {checked && <span className="shrink-0 text-xs font-bold text-violet-600" data-intake-row-time>{time}</span>}
             </button>
-            {check && time && <span className="shrink-0 text-xs font-bold text-violet-600" data-intake-row-time>{time}</span>}
+            {open && (
+              <div className="px-3 pb-3 space-y-2" data-intake-row-menu>
+                <div className="flex items-center gap-2">
+                  <input type="time" value={menuEdit || ''} onChange={e => setMenuEdit(e.target.value)} aria-label={`${item.name} ${intakeSlotLabel(slot)} 먹은 시각`}
+                    className="w-[7.5rem] text-sm font-bold text-violet-800 bg-white border border-violet-200 rounded-lg px-2 py-1.5" />
+                  <button type="button" disabled={!validTime(menuEdit) || menuEdit === time}
+                    onClick={async () => { await onRetime([row], menuEdit); setMenuKey(null); }}
+                    className="text-xs font-bold px-3 py-2 rounded-lg bg-violet-600 text-white disabled:opacity-40">시각 바꾸기</button>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {groups.find(g => g.key === slot).rows.filter(r => isChecked(r) && r.item.id !== item.id).length > 0 && (
+                    <button type="button" disabled={!validTime(menuEdit)}
+                      onClick={async () => { await onRetime(groups.find(g => g.key === slot).rows.filter(isChecked), menuEdit); setMenuKey(null); }}
+                      className="text-[11px] font-bold px-2.5 py-1.5 rounded-lg bg-white border border-violet-200 text-violet-700 disabled:opacity-40">{intakeSlotLabel(slot)} 체크한 것 모두 {menuEdit || time}으로</button>
+                  )}
+                  <button type="button" onClick={() => { setMenuKey(null); onUncheck(item, slot); }}
+                    className="text-[11px] font-bold px-2.5 py-1.5 rounded-lg bg-white border border-gray-200 text-gray-500">체크 취소</button>
+                </div>
+              </div>
+            )}
           </div>
         );
       };
+
       return (
         <div className="fixed inset-0 z-[110] bg-black/50 flex items-end sm:items-center justify-center" onClick={onClose} data-intake-sheet>
-          <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl shadow-2xl max-h-[85vh] overflow-y-auto no-scrollbar p-5 pb-safe" onClick={e => e.stopPropagation()}>
-            <div className="flex items-start justify-between gap-3 mb-3">
-              <div className="min-w-0">
-                <h2 className="text-lg font-bold text-gray-900">💊 {isToday ? '오늘' : `${Number(date.slice(5, 7))}/${Number(date.slice(8))}`} 복용</h2>
-                <p className="text-xs text-gray-400">누르면 아래 시각으로 체크, 다시 누르면 취소돼요.</p>
-                {adherence?.rate != null && (
-                  <p className="text-[11px] font-bold text-violet-600 mt-0.5" data-intake-adherence>
-                    최근 30일 복용률 {adherence.rate}%{adherence.medicine != null && adherence.supplement != null ? ` (약 ${adherence.medicine}% · 건강식품 ${adherence.supplement}%)` : ''}
-                  </p>
-                )}
+          <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl shadow-2xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="overflow-y-auto no-scrollbar p-5 pb-3">
+              <div className="flex items-start justify-between gap-3 mb-3">
+                <div className="min-w-0">
+                  <h2 className="text-lg font-bold text-gray-900">💊 {isToday ? '오늘' : `${Number(date.slice(5, 7))}/${Number(date.slice(8))}`} 복용</h2>
+                  <p className="text-xs text-gray-400 break-keep">누르면 {isToday ? '지금 시각으로' : '시간대 기본 시각으로'} 체크돼요. 체크한 것을 누르면 시각을 고칠 수 있어요.</p>
+                  {adherence?.rate != null && (
+                    <p className="text-[11px] font-bold text-violet-600 mt-0.5" data-intake-adherence>
+                      최근 30일 복용률 {adherence.rate}%{adherence.medicine != null && adherence.supplement != null ? ` (약 ${adherence.medicine}% · 건강식품 ${adherence.supplement}%)` : ''}
+                    </p>
+                  )}
+                </div>
+                <button type="button" onClick={onClose} aria-label="복용 창 닫기" className="w-9 h-9 shrink-0 rounded-full bg-gray-100 text-gray-500 font-bold">✕</button>
               </div>
-              <button type="button" onClick={onClose} aria-label="복용 창 닫기" className="w-9 h-9 shrink-0 rounded-full bg-gray-100 text-gray-500 font-bold">✕</button>
+              {showAck && (
+                <div className="bg-amber-50 border border-amber-100 rounded-2xl p-3 mb-3" data-intake-ack>
+                  <p className="text-xs text-amber-900 break-keep">등록하신 약과 건강식품을 같이 드셔도 되는지 약사에게 한 번 확인해 보세요. 앱은 약과의 궁합을 판단하지 않아요.</p>
+                  <button type="button" onClick={onAck} className="mt-2 text-xs font-bold px-3 py-1.5 rounded-lg bg-amber-500 text-white">확인했어요</button>
+                </div>
+              )}
+              {rows.length === 0 ? (
+                <div className="bg-violet-50 rounded-2xl p-4 text-sm text-violet-900 break-keep mb-3">
+                  매일 드시는 약이나 건강식품을 등록하면, 여기서 눌러서 체크만 하면 돼요.
+                </div>
+              ) : (
+                <div className="space-y-4 mb-3">
+                  {groups.map(g => {
+                    const done = g.rows.filter(isChecked);
+                    const left = g.rows.filter(r => !isChecked(r));
+                    return (
+                      <div key={g.key} className="space-y-1.5" data-intake-group={g.key}>
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-sm font-bold text-gray-700">{g.label} <span className="text-xs text-violet-600">{done.length}/{g.rows.length}</span></p>
+                          {left.length > 1 && (
+                            <button type="button" onClick={() => check(left, g.key)} aria-label={`${g.label} 모두 먹음`}
+                              className="text-xs font-bold px-3 py-1.5 rounded-lg bg-violet-600 text-white active:scale-95" data-intake-all>모두 먹음</button>
+                          )}
+                        </div>
+                        {g.rows.map(renderRow)}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {pairNotes.map((note, i) => (
+                <p key={i} className={`text-xs rounded-xl px-3 py-2 mb-2 break-keep ${note.kind === 'caution' ? 'bg-amber-50 text-amber-800' : 'bg-emerald-50 text-emerald-800'}`} data-intake-pair>
+                  {note.kind === 'caution' ? '⚠️' : '🔗'} {note.text}
+                </p>
+              ))}
+              <div className="grid grid-cols-2 gap-2">
+                <button type="button" onClick={onRecordOther} className="text-xs font-bold py-3 rounded-xl bg-violet-50 text-violet-700 border border-violet-100">+ 다른 건강식품 기록<br /><span className="font-normal">(사진/글)</span></button>
+                <button type="button" onClick={onOpenManager} className="text-xs font-bold py-3 rounded-xl bg-gray-100 text-gray-600">⚙️ 등록·관리</button>
+              </div>
             </div>
-            {rows.length > 0 && (
-              <label className="flex items-center justify-between gap-3 bg-violet-50 rounded-2xl px-3 py-2.5 mb-3" data-intake-sheet-time>
-                <span className="min-w-0">
-                  <span className="block text-sm font-bold text-violet-900">먹은 시각</span>
-                  <span className="block text-[11px] text-violet-600 break-keep">{sheetTime ? '잊고 늦게 체크하면 먼저 실제 시각으로 바꾸세요' : '비워 두면 시간대 기본 시각(아침 08:00 등)'}</span>
-                </span>
-                <input type="time" value={sheetTime} onChange={e => setSheetTime(e.target.value)} aria-label="먹은 시각"
-                  className="shrink-0 w-[7.5rem] text-sm font-bold text-violet-800 bg-white border border-violet-200 rounded-lg px-2 py-1.5" />
-              </label>
-            )}
-            {showAck && (
-              <div className="bg-amber-50 border border-amber-100 rounded-2xl p-3 mb-3" data-intake-ack>
-                <p className="text-xs text-amber-900 break-keep">등록하신 약과 건강식품을 같이 드셔도 되는지 약사에게 한 번 확인해 보세요. 앱은 약과의 궁합을 판단하지 않아요.</p>
-                <button type="button" onClick={onAck} className="mt-2 text-xs font-bold px-3 py-1.5 rounded-lg bg-amber-500 text-white">확인했어요</button>
-              </div>
-            )}
-            {rows.length === 0 ? (
-              <div className="bg-violet-50 rounded-2xl p-4 text-sm text-violet-900 break-keep mb-3">
-                매일 드시는 약이나 건강식품을 등록하면, 여기서 눌러서 체크만 하면 돼요.
-              </div>
-            ) : (
-              <div className="space-y-3 mb-3">
-                {meds.length > 0 && (
-                  <div className="space-y-1.5"><p className="text-[11px] font-bold text-gray-500">복용약</p>{meds.map(renderRow)}</div>
-                )}
-                {supps.length > 0 && (
-                  <div className="space-y-1.5"><p className="text-[11px] font-bold text-gray-500">건강식품</p>{supps.map(renderRow)}</div>
+            {toast && (
+              <div className={`border-t px-4 py-3 pb-safe ${toast.late ? 'bg-amber-50 border-amber-200' : 'bg-gray-900 border-gray-900'}`} data-intake-toast>
+                {toast.editing ? (
+                  <div className="flex items-center gap-2">
+                    <span className={`text-xs font-bold ${toast.late ? 'text-amber-900' : 'text-white'}`}>{intakeSlotLabel(toast.slot)} {toast.targets.length}개 먹은 시각</span>
+                    <input type="time" value={toast.editTime} onChange={e => setToast({ ...toast, editTime: e.target.value })} aria-label="방금 체크한 것 먹은 시각"
+                      className="w-[7.5rem] text-sm font-bold text-violet-800 bg-white border border-violet-200 rounded-lg px-2 py-1" />
+                    <button type="button" onClick={applyToastTime} disabled={!validTime(toast.editTime)} className="text-xs font-bold px-3 py-1.5 rounded-lg bg-violet-600 text-white disabled:opacity-40">적용</button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <div className="min-w-0 flex-1">
+                      <p className={`text-xs font-bold break-keep ${toast.late ? 'text-amber-900' : 'text-white'}`}>✓ {intakeSlotLabel(toast.slot)} {toast.targets.length}개를 {toast.time}으로 체크했어요</p>
+                      {toast.late && <p className="text-[11px] text-amber-800 break-keep">실제로 드신 시각이 다르면 바꿔 주세요.</p>}
+                    </div>
+                    <button type="button" onClick={() => { clearTimeout(toastTimer.current); setToast({ ...toast, editing: true }); }}
+                      className={`shrink-0 text-xs font-bold px-3 py-1.5 rounded-lg ${toast.late ? 'bg-amber-500 text-white' : 'bg-white text-gray-900'}`}>시각 바꾸기</button>
+                    <button type="button" onClick={() => showToast(null)} aria-label="알림 닫기" className={`shrink-0 w-7 h-7 rounded-full text-xs font-bold ${toast.late ? 'text-amber-700' : 'text-gray-300'}`}>✕</button>
+                  </div>
                 )}
               </div>
             )}
-            {pairNotes.map((note, i) => (
-              <p key={i} className={`text-xs rounded-xl px-3 py-2 mb-2 break-keep ${note.kind === 'caution' ? 'bg-amber-50 text-amber-800' : 'bg-emerald-50 text-emerald-800'}`} data-intake-pair>
-                {note.kind === 'caution' ? '⚠️' : '🔗'} {note.text}
-              </p>
-            ))}
-            <div className="grid grid-cols-2 gap-2">
-              <button type="button" onClick={onRecordOther} className="text-xs font-bold py-3 rounded-xl bg-violet-50 text-violet-700 border border-violet-100">+ 다른 건강식품 기록<br /><span className="font-normal">(사진/글)</span></button>
-              <button type="button" onClick={onOpenManager} className="text-xs font-bold py-3 rounded-xl bg-gray-100 text-gray-600">⚙️ 등록·관리</button>
-            </div>
           </div>
         </div>
       );
@@ -1045,7 +1880,7 @@
         sessionStorage.removeItem(VIEW_STATE_KEY);
         if (!saved || !(Date.now() - saved.savedAt < VIEW_STATE_MAX_AGE_MS)) return null;
         return {
-          activeTab: ['home', 'routine', 'status', 'analysis'].includes(saved.activeTab) ? saved.activeTab : null,
+          activeTab: ['home', 'routine', 'workout', 'status', 'analysis'].includes(saved.activeTab) ? saved.activeTab : null,
           currentDate: /^\d{4}-\d{2}-\d{2}$/.test(saved.currentDate || '') ? saved.currentDate : null,
           statsMode: ['week', 'month'].includes(saved.statsMode) ? saved.statsMode : null,
           longTermDrafts: saved.longTermDrafts && typeof saved.longTermDrafts === 'object' ? saved.longTermDrafts : {},
@@ -1751,6 +2586,1336 @@
       );
     }
 
+    // ★ v0.5.4 쉬는 시간 알림: 안드로이드는 진동, 아이폰은 진동이 안 되므로 짧은 소리도 함께 낸다.
+    // 소리는 사용자가 화면을 누른 뒤에만 켜지므로(브라우저 규칙) 세트 체크 때 미리 깨워 둔다.
+    let workoutAudioCtx = null;
+    const unlockWorkoutAudio = () => {
+      try {
+        if (!workoutAudioCtx) { const C = window.AudioContext || window.webkitAudioContext; if (C) workoutAudioCtx = new C(); }
+        if (workoutAudioCtx && workoutAudioCtx.state === 'suspended') workoutAudioCtx.resume();
+      } catch { /* 소리를 못 내도 화면 표시는 그대로 */ }
+    };
+    // ★ 카운트다운: 끝나기 3·2·1초 전 짧은 "삑", 0초에 길고 높은 "삐–".
+    // 쉬는 시간이 시작될 때 소리를 미리 예약해 두어, 다른 탭·화면에 있어도 제때 울린다(±10초·건너뛰기 때는 다시 예약/취소).
+    // 블루투스 이어폰이 잠들어 첫소리가 잘리지 않도록, 첫 "삑" 0.6초 전에 거의 들리지 않는 소리로 깨운다.
+    const REST_COUNTDOWN_PLAN = [
+      { before: 3.6, freq: 440, dur: 0.4, gain: 0.002 }, // 깨우기(거의 안 들림)
+      { before: 3, freq: 880, dur: 0.12, gain: 0.2 },
+      { before: 2, freq: 880, dur: 0.12, gain: 0.2 },
+      { before: 1, freq: 880, dur: 0.12, gain: 0.2 },
+      // 0초: 권투 종 "땡땡땡"(사용자 결정 2026-11-25)
+      { before: 0, bell: true },
+      { before: -0.23, bell: true }, // 2026-11-25 간격 0.3 → 0.18 → 0.23초(사용자 요청)
+      { before: -0.46, bell: true },
+    ];
+    // 권투 종 한 번 치기(소리 파일 없음). 쇠와 쇠가 부딪히는 소리가 나도록 세 가지를 겹친다.
+    //  1) 부딪히는 순간의 짧은 금속성 "탁"(높은 대역의 잡음 0.03초)
+    //  2) 음 높이가 어긋난 울림 8개(종의 배음 비율) — 사인파만 쓰면 그릇 소리처럼 들려서 2차 버전에서 바꿈
+    //  3) 울림마다 두 소리를 조금 어긋나게 겹쳐 "쨍–" 하고 떨리게
+    // 2026-11-25: 1차 620Hz → 2차 1100Hz(사인파 4개, "그릇 소리" 의견) → 3차 쇠 종소리(이것)
+    const BELL_SOUND_LABEL = '쇠 종소리(3차)';
+    const BELL_BASE_HZ = 1100;
+    const BELL_PARTIALS = [ // [배음 비율, 크기, 울리는 초]
+      [1, 1, 1.6], [1.59, 0.7, 1.3], [2.14, 0.6, 1.1], [2.83, 0.5, 0.9],
+      [3.51, 0.38, 0.7], [4.22, 0.3, 0.55], [5.43, 0.22, 0.4], [6.8, 0.15, 0.3],
+    ];
+    const BELL_SHIMMER_HZ = 2.5;
+    let bellNoiseBuffer = null;
+    const strikeBell = (ctx, startAt, nodes) => {
+      const master = ctx.createGain();
+      master.gain.value = 0.22;
+      master.connect(ctx.destination);
+      // 1) 부딪히는 "탁"
+      if (!bellNoiseBuffer || bellNoiseBuffer.sampleRate !== ctx.sampleRate) {
+        bellNoiseBuffer = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 0.04), ctx.sampleRate);
+        const data = bellNoiseBuffer.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      }
+      const noise = ctx.createBufferSource(); noise.buffer = bellNoiseBuffer;
+      const band = ctx.createBiquadFilter(); band.type = 'bandpass'; band.frequency.value = 5000; band.Q.value = 0.8;
+      const hit = ctx.createGain();
+      hit.gain.setValueAtTime(1.2, startAt);
+      hit.gain.exponentialRampToValueAtTime(0.001, startAt + 0.03);
+      noise.connect(band); band.connect(hit); hit.connect(master);
+      noise.start(startAt); noise.stop(startAt + 0.04);
+      nodes.push(noise);
+      // 2)·3) 어긋난 배음 울림, 둘씩 살짝 어긋나게
+      BELL_PARTIALS.forEach(([ratio, level, decay]) => {
+        [-BELL_SHIMMER_HZ, BELL_SHIMMER_HZ].forEach(detune => {
+          const osc = ctx.createOscillator(); const gain = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.value = BELL_BASE_HZ * ratio + detune;
+          gain.gain.setValueAtTime(0.0001, startAt);
+          gain.gain.exponentialRampToValueAtTime(0.5 * level, startAt + 0.002);
+          gain.gain.exponentialRampToValueAtTime(0.0001, startAt + decay);
+          osc.connect(gain); gain.connect(master);
+          osc.start(startAt); osc.stop(startAt + decay + 0.05);
+          nodes.push(osc);
+        });
+      });
+    };
+    // ⚙️ 운동 설정의 미리 듣기: 삑·삑·삑 → 땡땡땡을 바로 한 번 들려준다(쉬는 시간 예약과는 따로).
+    const previewRestSounds = () => {
+      unlockWorkoutAudio();
+      const ctx = workoutAudioCtx;
+      if (!ctx) return false;
+      const untilEnd = 3.2;
+      REST_COUNTDOWN_PLAN.forEach(p => {
+        const at = ctx.currentTime + untilEnd - p.before;
+        try {
+          if (p.bell) { strikeBell(ctx, at, []); return; }
+          const osc = ctx.createOscillator(); const gain = ctx.createGain();
+          osc.frequency.value = p.freq; gain.gain.value = p.gain;
+          osc.connect(gain); gain.connect(ctx.destination);
+          osc.start(at); osc.stop(at + p.dur);
+        } catch { /* 소리 없음 */ }
+      });
+      return true;
+    };
+    let restScheduled = { endsAt: null, nodes: [] };
+    const cancelRestSounds = () => {
+      restScheduled.nodes.forEach(n => { try { n.stop(); } catch { /* 이미 끝남 */ } });
+      restScheduled = { endsAt: null, nodes: [] };
+    };
+    const scheduleRestSounds = (endsAt) => {
+      if (restScheduled.endsAt === endsAt) return;
+      cancelRestSounds();
+      const ctx = workoutAudioCtx;
+      if (!ctx || ctx.state === 'closed') return;
+      const untilEnd = (endsAt - Date.now()) / 1000;
+      const nodes = [];
+      REST_COUNTDOWN_PLAN.forEach(p => {
+        const at = untilEnd - p.before;
+        if (at < 0) return; // 이미 지난 소리는 건너뛴다
+        try {
+          if (p.bell) { strikeBell(ctx, ctx.currentTime + at, nodes); return; }
+          const osc = ctx.createOscillator(); const gain = ctx.createGain();
+          osc.frequency.value = p.freq; gain.gain.value = p.gain;
+          osc.connect(gain); gain.connect(ctx.destination);
+          osc.start(ctx.currentTime + at); osc.stop(ctx.currentTime + at + p.dur);
+          nodes.push(osc);
+        } catch { /* 소리 없음 */ }
+      });
+      restScheduled = { endsAt, nodes };
+    };
+    // 끝났을 때: 진동(안드로이드). 소리를 예약하지 못했으면(새로고침 직후 등) 종소리만 바로 낸다.
+    const notifyRestDone = (endsAt, soundOn) => {
+      try { if (navigator.vibrate) navigator.vibrate([200, 100, 200]); } catch { /* 진동 없음 */ }
+      if (!soundOn || restScheduled.endsAt === endsAt) return;
+      try {
+        const ctx = workoutAudioCtx;
+        if (!ctx) return;
+        [0, 0.23, 0.46].forEach(t => strikeBell(ctx, ctx.currentTime + t, []));
+      } catch { /* 소리 없음 */ }
+    };
+    const formatClock = (sec) => { const s = Math.max(0, Math.round(sec)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+
+    // ★ v0.5.5 종목 작은 그림(40px): 평소엔 시작 자세 한 장, 그림을 누르면 시작·끝 자세를 0.8초마다 번갈아(다시 누르면 멈춤).
+    // 화면에 보일 때만 받는다(loading="lazy"). 그림이 없거나 못 받으면 장비 아이콘으로 대신한다.
+    const EQUIPMENT_ICONS = { barbell: '🏋️', smith: '🏋️', dumbbell: '💪', kettlebell: '🔔', machine: '⚙️', cable: '🔗', bodyweight: '🧍', pullup_bar: '🤸', parallel_bars: '🤸', band: '➰', ab_wheel: '🛞', cardio_machine: '🏃', none: '🏃' };
+    const THUMB_FRAME_MS = 800;
+    function ExerciseThumb({ entry, library, size = 40 }) {
+      const [playing, setPlaying] = useState(false);
+      const [frame, setFrame] = useState(0);
+      const [failed, setFailed] = useState(false);
+      useEffect(() => {
+        if (!playing) return;
+        const id = setInterval(() => setFrame(f => (f + 1) % 2), THUMB_FRAME_MS);
+        return () => clearInterval(id);
+      }, [playing]);
+      const box = { width: size, height: size };
+      if (!entry?.image || !library?.imageBase || failed) {
+        return <span className="shrink-0 rounded-lg bg-gray-100 flex items-center justify-center text-lg" style={box} aria-hidden="true" data-exercise-thumb="icon">{EQUIPMENT_ICONS[entry?.equipment] || '🏋️'}</span>;
+      }
+      const toggle = (e) => { e.stopPropagation(); setPlaying(p => { if (p) setFrame(0); return !p; }); };
+      return (
+        <button type="button" onClick={toggle} aria-label={`${entry.name} 동작 ${playing ? '멈추기' : '보기'}`} data-exercise-thumb={playing ? 'playing' : 'still'}
+          className={`shrink-0 rounded-lg overflow-hidden bg-gray-100 ${playing ? 'ring-2 ring-green-500' : ''}`} style={box}>
+          <img src={`${library.imageBase}${entry.image}/${frame}.jpg`} alt="" loading="lazy" width={size} height={size}
+            className="w-full h-full object-cover" onError={() => setFailed(true)} />
+        </button>
+      );
+    }
+
+    const COACH_COMMENT_TIMEOUT_MS = 15000; // ★ v0.5.6 코치 한마디를 기다리는 최대 시간(진행 화면에서 기다리므로 운동을 막지 않음)
+    const groupLabelOf = (g) => SHORTCUT_GROUPS.find(x => x.key === g)?.label || g;
+
+    // ★ v0.5.4 운동 중 띠: 다른 탭에 있을 때 위에 보여주고 누르면 운동 탭으로 돌아간다.
+    function WorkoutBanner({ session, onOpen }) {
+      const [now, setNow] = useState(Date.now());
+      useEffect(() => { const id = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(id); }, []);
+      const elapsed = session.startedAt ? (now - Date.parse(session.startedAt)) / 1000 : 0;
+      const restLeft = session.rest?.endsAt ? (session.rest.endsAt - now) / 1000 : 0;
+      return (
+        <button type="button" onClick={onOpen} data-workout-banner
+          className="w-full mb-3 flex items-center justify-between gap-2 bg-green-600 text-white rounded-xl px-3 py-2 text-sm font-bold">
+          <span>🏋️ {session.stage === 'pick' ? '운동 준비 중' : session.editLogId ? '운동 기록 고치는 중' : `운동 중 · ${Math.floor(elapsed / 60)}분`}{restLeft > 0 ? ` · 쉬는 시간 ${formatClock(restLeft)}` : ''}</span>
+          <span className="text-xs bg-white/20 rounded-lg px-2 py-1 whitespace-nowrap">돌아가기 ›</span>
+        </button>
+      );
+    }
+
+    // ★ v0.5.4 헬스 기록 도우미: 종목 고르기(pick) → 진행(run) → 끝내기(finish)
+    function WorkoutSession({ session, setSession, library, index, byKey, places, onSavePlaces, allLogs, onShowInfo, onSaveLog, checkDuplicate, loadYesterday }) {
+      const [now, setNow] = useState(Date.now());
+      const [yesterday, setYesterday] = useState(null); // ★ v0.5.5 { alcohol, lateNight }
+      const [recoGroupsOpen, setRecoGroupsOpen] = useState(false);
+      const [talkText, setTalkText] = useState(''); // ★ v0.5.6 한 줄 입력
+      const [talkBusy, setTalkBusy] = useState(false);
+      const [talkError, setTalkError] = useState('');
+      useEffect(() => {
+        if (session.stage !== 'pick' || !loadYesterday) return;
+        let alive = true;
+        loadYesterday().then(y => { if (alive) setYesterday(y); }).catch(() => { if (alive) setYesterday({}); });
+        return () => { alive = false; };
+      }, [session.stage]);
+      const [editing, setEditing] = useState(null); // { item, set }
+      const [removing, setRemoving] = useState(null); // 빼기 메뉴를 연 종목 순서
+      const [restEditing, setRestEditing] = useState(null); // 쉬는 시간을 고치는 종목 순서
+      const [alternatives, setAlternatives] = useState(null); // { part, keys }
+      const [searchOpen, setSearchOpen] = useState(false);
+      const [query, setQuery] = useState('');
+      const [undo, setUndo] = useState(null); // { key, place } 장소 목록 자동 추가 되돌리기
+      const [confirmCancel, setConfirmCancel] = useState(false);
+      const [duplicates, setDuplicates] = useState(0);
+      const [saving, setSaving] = useState(false);
+      useEffect(() => { const id = setInterval(() => setNow(Date.now()), 500); return () => clearInterval(id); }, []);
+      useEffect(() => { if (!undo) return; const id = setTimeout(() => setUndo(null), 6000); return () => clearTimeout(id); }, [undo]);
+      useEffect(() => {
+        if (session.stage !== 'finish') return;
+        let alive = true;
+        checkDuplicate(session.date, session.editLogId).then(n => { if (alive) setDuplicates(n); }).catch(() => {});
+        return () => { alive = false; };
+      }, [session.stage]);
+
+      const history = React.useMemo(() => exerciseSetHistory(allLogs || [], index), [allLogs, index]);
+      // ★ v0.5.5 오늘의 추천(규칙). 1분 단위로만 다시 계산한다.
+      const reco = session.reco || { minutes: RECO_DEFAULT_MINUTES, condition: 'normal', groups: null, supplement: true };
+      const nowMinute = Math.floor(now / 60000);
+      const today = (() => { const d = new Date(nowMinute * 60000); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; })();
+      const recommendation = React.useMemo(() => allLogs && yesterday ? buildRecommendation({
+        logs: allLogs, index, places, location: session.location, minutes: reco.minutes, condition: reco.condition,
+        groups: reco.groups, yesterday, nowMs: nowMinute * 60000, today, avoid: reco.avoid || [],
+      }) : null, [allLogs, index, places, session.location, reco.minutes, reco.condition, (reco.groups || []).join(), (reco.avoid || []).join(), yesterday, nowMinute]);
+      const placeKeys = places[session.location] || [];
+      const sessionKeys = (session.items || []).map(i => i.key);
+      const update = (fn) => setSession(s => fn(s));
+      const updateItem = (idx, fn) => update(s => ({ ...s, items: s.items.map((it, i) => i === idx ? fn(it) : it) }));
+      const updateSet = (idx, setIdx, patch) => updateItem(idx, it => {
+        const sets = it.sets.map((st, j) => j === setIdx ? { ...st, ...patch } : st);
+        // 처음 하는 종목: 첫 값을 아직 비어 있는 아래 세트에 복사한다.
+        const edited = sets[setIdx];
+        if (setHasValue(it, edited)) {
+          for (let j = setIdx + 1; j < sets.length; j++) {
+            if (!setHasValue(it, sets[j]) && !sets[j].done) sets[j] = { ...sets[j], weight: edited.weight, reps: edited.reps, seconds: edited.seconds };
+          }
+        }
+        return { ...it, sets };
+      });
+      const sameForRest = (idx, setIdx) => updateItem(idx, it => {
+        const src = it.sets[setIdx];
+        return { ...it, sets: it.sets.map((st, j) => j > setIdx && !st.done ? { ...st, weight: src.weight, reps: src.reps, seconds: src.seconds } : st) };
+      });
+      const startRest = (item) => update(s => ({ ...s, rest: { endsAt: Date.now() + item.restSec * 1000, total: item.restSec, notified: false } }));
+      // 쉬는 중 ±10초(이번 한 번만). 줄여서 남은 시간이 없으면 지금 끝난 것으로 한다.
+      const adjustRest = (deltaSec) => update(s => {
+        if (!s.rest) return s;
+        const endsAt = Math.max(Date.now(), s.rest.endsAt + deltaSec * 1000);
+        return { ...s, rest: { ...s.rest, endsAt, total: Math.max(10, s.rest.total + deltaSec), notified: false } };
+      });
+      // 종목별 쉬는 시간: 장소 설정에 기억하고, 오늘 세션의 같은 종목에도 바로 반영한다. null이면 기본값으로.
+      const setItemRest = (item, sec) => {
+        const restByKey = { ...(places.restByKey || {}) };
+        if (sec == null) delete restByKey[item.key]; else restByKey[item.key] = sec;
+        const nextPlaces = { ...places, restByKey };
+        onSavePlaces(nextPlaces);
+        const value = sec ?? restSecondsFor(entryFor(item.key) || { key: item.key }, nextPlaces);
+        update(s => ({ ...s, items: s.items.map(it => it.key === item.key ? { ...it, restSec: value } : it) }));
+      };
+      const soundOn = restSoundOn(places);
+      const toggleSound = () => {
+        unlockWorkoutAudio();
+        const rest = { ...(places.rest || {}) };
+        if (soundOn) rest.sound = false; else delete rest.sound;
+        onSavePlaces({ ...places, rest });
+      };
+      const toggleDone = (idx, setIdx) => {
+        const item = session.items[idx];
+        const st = item.sets[setIdx];
+        if (!setHasValue(item, st)) { setEditing({ item: idx, set: setIdx }); return; }
+        unlockWorkoutAudio();
+        updateSet(idx, setIdx, { done: !st.done });
+        if (!st.done) startRest(item);
+      };
+      const entryFor = (key) => byKey.get(key);
+      const lastLine = (key) => {
+        const entry = entryFor(key);
+        const last = entry ? pickLastSets(history, entry, session.location) : null;
+        if (!last) return '처음';
+        const item = { input: exerciseInputKind(entry) };
+        return `${Number(last.date.slice(5, 7))}/${Number(last.date.slice(8, 10))} · ${last.sets.map(s => formatSessionSet(item, s)).filter(Boolean).join(', ')}`;
+      };
+      const addToPlace = async (key) => {
+        if (placeKeys.includes(key)) return;
+        const ok = await onSavePlaces({ ...places, [session.location]: [...placeKeys, key] });
+        if (ok) setUndo({ key, place: session.location });
+      };
+      const undoAdd = async () => {
+        if (!undo) return;
+        await onSavePlaces({ ...places, [undo.place]: (places[undo.place] || []).filter(k => k !== undo.key) });
+        setUndo(null);
+      };
+      const addExercise = (key) => {
+        const entry = entryFor(key);
+        if (!entry) return;
+        if (session.stage === 'pick') update(s => ({ ...s, picked: [...(s.picked || []), key] }));
+        else update(s => ({ ...s, items: [...s.items, makeSessionItem(entry, plannedSetsFrom(history, entry, s.location), places)] }));
+        addToPlace(key);
+        setSearchOpen(false); setQuery(''); setAlternatives(null);
+      };
+      const nameButton = (key, name) => {
+        const entry = entryFor(key);
+        return entry && !entry.custom ? (
+          <button type="button" onClick={() => onShowInfo(entry)} data-exercise-name
+            className="font-bold text-green-800 underline decoration-dotted underline-offset-2 text-left">{name} ⓘ</button>
+        ) : <span className="font-bold text-gray-800">{name}</span>;
+      };
+      const searchPanel = (
+        <div className="bg-white rounded-3xl p-4 shadow-sm" data-session-search>
+          <div className="flex gap-2 mb-3">
+            <input value={query} onChange={e => setQuery(e.target.value)} placeholder="종목 이름 (예: 레그 컬, 케틀)" autoFocus
+              className="flex-1 min-w-0 border border-gray-200 rounded-xl px-3 py-2 text-sm" />
+            <button type="button" onClick={() => { setSearchOpen(false); setQuery(''); }} className="text-sm font-bold text-gray-500 px-2">닫기</button>
+          </div>
+          <div className="space-y-2 max-h-72 overflow-y-auto">
+            {searchExerciseLibrary(library, query, [...sessionKeys, ...(session.picked || [])]).slice(0, 30).map(e => (
+              <div key={e.key} className="flex items-center justify-between gap-2 text-sm" data-session-search-result={e.key}>
+                <ExerciseThumb entry={e} library={library} />
+                <span className="min-w-0 flex-1">{nameButton(e.key, e.name)}<span className="text-[11px] text-gray-400 ml-1.5">{shortTargetLabels(e).join('·')} · {library.equipmentLabels?.[e.equipment]}</span></span>
+                <button type="button" onClick={() => addExercise(e.key)} className="shrink-0 text-xs font-bold text-white bg-green-600 px-2.5 py-1.5 rounded-lg">넣기</button>
+              </div>
+            ))}
+          </div>
+          <p className="text-[11px] text-gray-400 mt-2">{WORKOUT_PLACE_LABELS[session.location]} 목록에 없는 종목은 넣으면 목록에도 추가돼요.</p>
+        </div>
+      );
+      const undoToast = undo && (
+        <div className="fixed left-1/2 -translate-x-1/2 bottom-28 z-50 bg-gray-900 text-white text-sm rounded-xl px-4 py-2.5 flex items-center gap-3 shadow-xl" data-undo-toast>
+          <span>{WORKOUT_PLACE_LABELS[undo.place]} 목록에 추가했어요</span>
+          <button type="button" onClick={undoAdd} className="font-bold text-green-300">되돌리기</button>
+        </div>
+      );
+      const cancelBox = confirmCancel ? (
+        <div className="bg-red-50 rounded-2xl p-3 flex items-center justify-between gap-2" data-cancel-confirm>
+          <span className="text-sm font-bold text-red-700">{session.editLogId ? '고친 내용을 버릴까요?' : '기록하지 않고 끝낼까요?'}</span>
+          <span className="flex gap-1.5 shrink-0">
+            <button type="button" onClick={() => setSession(null)} className="text-xs font-bold text-white bg-red-500 px-2.5 py-1.5 rounded-lg">네</button>
+            <button type="button" onClick={() => setConfirmCancel(false)} className="text-xs font-bold text-gray-600 bg-white px-2.5 py-1.5 rounded-lg">아니오</button>
+          </span>
+        </div>
+      ) : (
+        <button type="button" onClick={() => setConfirmCancel(true)} className="w-full text-sm font-bold text-gray-400 py-2">{session.editLogId ? '고치기 취소' : '운동 취소'}</button>
+      );
+
+      // ── 1. 종목 고르기
+      if (session.stage === 'pick') {
+        const picked = session.picked || [];
+        const toggle = (key) => update(s => ({ ...s, picked: (s.picked || []).includes(key) ? s.picked.filter(k => k !== key) : [...(s.picked || []), key] }));
+        const shortcuts = recentWorkoutShortcuts(allLogs || [], index);
+        const setReco = (patch) => update(s => ({ ...s, reco: { ...(s.reco || reco), ...patch } }));
+        const recoItems = recommendation ? [...recommendation.items, ...(reco.supplement !== false && recommendation.supplement ? [recommendation.supplement] : [])] : [];
+        const startFromReco = () => {
+          const d = new Date();
+          const items = recoItems.map(r => {
+            const entry = entryFor(r.key);
+            if (!entry) return null;
+            const last = pickLastSets(history, entry, session.location);
+            const base = makeSessionItem(entry, last, places);
+            return { ...base, sets: r.sets.map(x => ({ ...emptySet(), weight: x.weight ?? null, reps: x.reps ?? null, seconds: x.seconds ?? null })), change: r.change, reason: r.reason, supplement: !!r.supplement };
+          }).filter(Boolean);
+          setSession(s => ({
+            ...s, stage: 'run', startedAt: d.toISOString(),
+            date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
+            time: `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`,
+            items,
+            plan: {
+              groups: recommendation.groups, auto: !reco.groups, minutes: reco.minutes, condition: reco.condition,
+              alcohol: recommendation.alcohol, items: recoItems.map(r => ({ key: r.key, change: r.change, reason: r.reason })),
+              ...(recommendation.avoid?.length ? { avoid: recommendation.avoid } : {}),
+              ...(reco.text ? { text: reco.text } : {}),
+            },
+          }));
+          try { localStorage.setItem('workoutLastPlace', session.location); } catch { /* 기억 못 해도 동작 */ }
+          window.scrollTo(0, 0);
+          requestCoachComment();
+        };
+        // ★ v0.5.6 코치 한마디: [이대로 시작] 때 한 번만. 계획을 바꾸지 않고 풀어 주기만 한다. 실패하거나 느리면 없이 진행.
+        const requestCoachComment = async () => {
+          const startedPlanItems = recoItems.map(r => {
+            const entry = entryFor(r.key);
+            const item = { input: exerciseInputKind(entry) };
+            // AI가 "80kg×15"를 15세트로 읽지 않게 "80kg 15회"처럼 풀고 세트 수를 따로 적는다.
+            const setWords = r.sets.map(x => item.input === 'hold' ? (x.seconds != null ? `${x.seconds}초` : '')
+              : item.input === 'reps' ? (x.reps != null ? `${x.weight ? x.weight + 'kg ' : ''}${x.reps}회` : '')
+              : (x.weight != null && x.reps != null ? `${x.weight}kg ${x.reps}회` : '')).filter(Boolean);
+            const setsText = `${r.sets.length}세트${setWords.length ? ': ' + setWords.join(' / ') : ''}`;
+            return { name: entry?.name || r.key, sets: setsText, reason: r.reason };
+          });
+          const plan = {
+            place: session.location, minutes: reco.minutes, condition: reco.condition, groups: recommendation.groups, auto: !reco.groups,
+            avoid: recommendation.avoid || [], alcohol: recommendation.alcohol, lateNight: recommendation.lateNight, cardio: recommendation.cardio,
+            text: reco.text || '', items: startedPlanItems,
+            status: recommendation.status.map(st => ({ label: st.label, days: st.days, ready: st.ready })),
+          };
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), COACH_COMMENT_TIMEOUT_MS);
+          try {
+            const res = await callAI('workoutCoach', { mode: 'comment', plan }, controller.signal);
+            const comment = String(res?.comment || '').trim().slice(0, 300);
+            if (comment) setSession(s => s && s.plan ? { ...s, plan: { ...s.plan, comment } } : s);
+          } catch { /* 한마디 없이 운동은 그대로 */ } finally { clearTimeout(timer); }
+        };
+        // ★ v0.5.6 한 줄 입력: 규칙으로 먼저 읽고, 하나도 못 읽으면 AI에게 묻는다. 결과는 버튼 값에만 반영한다.
+        const applyTalk = async () => {
+          const text = talkText.trim().slice(0, 100);
+          if (!text) { setTalkError('한 줄로 적어 주세요. 예: 피곤해서 30분만'); return; }
+          setTalkError('');
+          let parsed = parseWorkoutText(text);
+          let source = 'rule';
+          if (!parsed.matched) {
+            setTalkBusy(true);
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), COACH_COMMENT_TIMEOUT_MS);
+            try {
+              const res = await callAI('workoutCoach', { mode: 'parse', text }, controller.signal);
+              parsed = { groups: [], avoid: [], ...(res?.parsed || {}) };
+              source = 'ai';
+            } catch { parsed = null; } finally { clearTimeout(timer); setTalkBusy(false); }
+          }
+          const has = parsed && (parsed.minutes != null || parsed.condition || parsed.place || parsed.groups?.length || parsed.avoid?.length);
+          if (!has) { setTalkError('알아듣지 못했어요. 아래 버튼으로 골라 주세요.'); return; }
+          update(s => {
+            const cur = s.reco || reco;
+            const next = { ...cur, text, talk: { text, source, parsed, before: { minutes: cur.minutes, condition: cur.condition, groups: cur.groups ?? null, avoid: cur.avoid || [], location: s.location } } };
+            if (parsed.minutes != null) next.minutes = parsed.minutes;
+            if (parsed.condition) next.condition = parsed.condition;
+            if (parsed.groups?.length) next.groups = parsed.groups;
+            next.avoid = parsed.avoid || [];
+            if (next.groups) next.groups = next.groups.filter(g => !next.avoid.includes(g));
+            if (next.groups && !next.groups.length) next.groups = null;
+            return { ...s, location: parsed.place || s.location, reco: next };
+          });
+          setTalkText('');
+        };
+        const undoTalk = () => update(s => {
+          const cur = s.reco || reco;
+          const b = cur.talk?.before;
+          if (!b) return s;
+          const { talk, text, ...rest } = cur;
+          return { ...s, location: b.location, reco: { ...rest, minutes: b.minutes, condition: b.condition, groups: b.groups, avoid: b.avoid } };
+        });
+        const talkChips = (() => {
+          const p = reco.talk?.parsed;
+          if (!p) return [];
+          const chips = [];
+          if (p.minutes != null) chips.push(`${p.minutes}분`);
+          if (p.condition) chips.push({ tired: '피곤', normal: '보통', good: '좋음' }[p.condition]);
+          if (p.place) chips.push(WORKOUT_PLACE_LABELS[p.place]);
+          (p.groups || []).forEach(g => chips.push(groupLabelOf(g)));
+          (p.avoid || []).forEach(g => chips.push(`${groupLabelOf(g)} 빼기`));
+          return chips;
+        })();
+        const groupLabel = groupLabelOf;
+        const changeMark = { up: '↑', hold: '=', down: '↓', new: '·' };
+        const recoCard = (
+          <div className="bg-gradient-to-br from-green-50 to-emerald-50 border border-green-200 rounded-3xl p-4 space-y-3" data-reco-card>
+            <h3 className="font-extrabold text-green-900">오늘의 추천</h3>
+            <div data-talk>
+              <div className="flex gap-1.5">
+                <input value={talkText} onChange={e => { setTalkText(e.target.value); if (talkError) setTalkError(''); }} maxLength={100}
+                  onKeyDown={e => { if (e.key === 'Enter') applyTalk(); }} placeholder="한 줄로 말하기 (예: 피곤해서 30분만, 어깨 좀 아파)"
+                  className="flex-1 min-w-0 border border-green-200 rounded-xl px-3 py-2 text-sm bg-white" data-talk-input />
+                <button type="button" disabled={talkBusy} onClick={applyTalk} data-talk-apply
+                  className="shrink-0 px-3 py-2 rounded-xl bg-green-600 text-white text-sm font-bold disabled:opacity-50">{talkBusy ? '듣는 중' : '적용'}</button>
+              </div>
+              {talkError && <p className="text-[11px] text-red-600 mt-1" data-talk-error>{talkError}</p>}
+              {talkChips.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1 mt-1.5" data-talk-chips>
+                  <span className="text-[11px] text-gray-500">"{reco.talk.text}" →</span>
+                  {talkChips.map(c => <span key={c} className="text-[11px] font-bold bg-white text-green-800 border border-green-200 px-2 py-0.5 rounded-lg">{c}</span>)}
+                  {reco.talk.source === 'ai' && <span className="text-[11px] text-gray-400">(AI가 읽음)</span>}
+                  <button type="button" onClick={undoTalk} className="text-[11px] font-bold text-gray-500 underline" data-talk-undo>✕ 되돌리기</button>
+                </div>
+              )}
+            </div>
+            {recommendation?.avoid?.length > 0 && <p className="text-xs bg-red-50 text-red-800 rounded-xl px-3 py-2" data-reco-avoid>{recommendation.avoid.map(groupLabelOf).join('·')} 운동은 뺐어요. 아프면 무리하지 마세요.</p>}
+            {!recommendation && <p className="text-sm text-green-700 animate-pulse">기록을 보고 계산하는 중이에요.</p>}
+            {recommendation && (
+              <>
+                {recommendation.alcohol && <p className="text-xs bg-amber-100 text-amber-900 rounded-xl px-3 py-2" data-reco-alcohol>🍺 어제 음주 기록이 있어요 → 무게는 올리지 않고 세트를 1개씩 줄였어요.</p>}
+                {recommendation.restSuggest && <p className="text-xs bg-blue-50 text-blue-900 rounded-xl px-3 py-2" data-reco-rest>3일 연속 운동했어요. 오늘은 쉬거나 걷기 30분도 좋아요. 그래도 한다면 아래처럼 가볍게.</p>}
+                <div data-reco-status>
+                  <p className="text-[11px] font-bold text-gray-500 mb-1">부위 상태</p>
+                  <div className="flex flex-wrap gap-1">
+                    {recommendation.status.map(st => (
+                      <span key={st.key} className={`text-[11px] font-bold px-2 py-1 rounded-lg ${st.ready ? 'bg-white text-green-800 border border-green-200' : 'bg-gray-100 text-gray-500'}`}>
+                        {st.ready ? '●' : '◐'} {st.label} {st.days == null ? '기록 없음' : st.days === 0 ? '오늘' : st.days === 1 ? '어제' : `${st.days}일 전`}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-sm font-bold text-gray-800">추천: {recommendation.groups.map(groupLabel).join(' + ')}</span>
+                  <span className="text-[11px] text-gray-500">{reco.groups ? '(직접 고름)' : '(가장 오래 쉰 부위)'}</span>
+                  <button type="button" onClick={() => setRecoGroupsOpen(!recoGroupsOpen)} className="text-[11px] font-bold text-green-700 underline">부위 바꾸기</button>
+                  {reco.groups && <button type="button" onClick={() => setReco({ groups: null })} className="text-[11px] font-bold text-gray-500 underline">자동으로</button>}
+                </div>
+                {recoGroupsOpen && (
+                  <div className="flex flex-wrap gap-1" data-reco-groups>
+                    {SHORTCUT_GROUPS.map(g => {
+                      const on = recommendation.groups.includes(g.key);
+                      return <button key={g.key} type="button" data-reco-group={g.key}
+                        onClick={() => { const cur = recommendation.groups; const next = on ? cur.filter(x => x !== g.key) : [...cur, g.key]; setReco({ groups: next.length ? next : null }); }}
+                        className={`text-xs font-bold px-2 py-1 rounded-lg border ${on ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-200'}`}>{g.label}</button>;
+                    })}
+                    {recommendation.fullBodyCandidate && <button type="button" onClick={() => setReco({ groups: ['chest', 'back', 'legs', 'shoulder'] })} className="text-xs font-bold px-2 py-1 rounded-lg border bg-white text-gray-600 border-gray-200">전신</button>}
+                  </div>
+                )}
+                <div className="grid grid-cols-2 gap-1.5">
+                  <div className="flex gap-1" data-reco-minutes>
+                    <button type="button" disabled={reco.minutes <= RECO_MIN_MINUTES} onClick={() => setReco({ minutes: Math.max(RECO_MIN_MINUTES, reco.minutes - RECO_MINUTES_STEP) })} data-reco-minus
+                      className="px-2 py-1.5 text-xs font-bold rounded-lg bg-white text-gray-700 disabled:opacity-40">−10</button>
+                    <span className="flex-1 py-1.5 text-center text-sm font-extrabold text-green-800" data-reco-minute-value>{reco.minutes}분</span>
+                    <button type="button" disabled={reco.minutes >= RECO_MAX_MINUTES} onClick={() => setReco({ minutes: Math.min(RECO_MAX_MINUTES, reco.minutes + RECO_MINUTES_STEP) })} data-reco-plus
+                      className="px-2 py-1.5 text-xs font-bold rounded-lg bg-white text-gray-700 disabled:opacity-40">+10</button>
+                  </div>
+                  <div className="flex gap-1" data-reco-condition>
+                    {[['tired', '피곤'], ['normal', '보통'], ['good', '좋음']].map(([v, label]) => <button key={v} type="button" onClick={() => setReco({ condition: v })} data-reco-cond={v}
+                      className={`flex-1 py-1.5 text-xs font-bold rounded-lg ${reco.condition === v ? 'bg-green-600 text-white' : 'bg-white text-gray-600'}`}>{label}</button>)}
+                  </div>
+                </div>
+                {recoItems.length === 0 && <p className="text-xs text-gray-500">{WORKOUT_PLACE_LABELS[session.location]} 목록에 이 부위 종목이 없어요. 부위를 바꾸거나 아래에서 직접 고르세요.</p>}
+                <div className="space-y-1.5" data-reco-items>
+                  {recoItems.map(r => {
+                    const entry = entryFor(r.key);
+                    const item = { input: exerciseInputKind(entry) };
+                    const setsText = r.sets.map(x => formatSessionSet(item, x)).filter(Boolean);
+                    return (
+                      <div key={r.key} className={`bg-white rounded-xl px-3 py-2 flex gap-2 items-start ${r.supplement ? 'border border-dashed border-amber-300' : ''}`} data-reco-item={r.key} data-reco-change={r.change}>
+                        <ExerciseThumb entry={entry} library={library} />
+                        <div className="min-w-0 flex-1">
+                        <div className="flex items-baseline justify-between gap-2 text-sm">
+                          <span className="min-w-0">{r.supplement ? <span className="text-[11px] font-bold text-amber-700 mr-1">+ 보충</span> : null}{nameButton(r.key, entry?.name || r.key)}</span>
+                          <span className={`text-xs font-extrabold shrink-0 ${r.change === 'up' ? 'text-green-700' : r.change === 'down' ? 'text-blue-600' : 'text-gray-400'}`}>{changeMark[r.change]}</span>
+                        </div>
+                        <p className="text-[11px] text-gray-600">{setsText.length ? setsText.join(', ') : `${r.sets.length}세트 · 첫 세트에 입력`}</p>
+                        <p className="text-[11px] text-gray-400">{r.reason}</p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                {recommendation.supplement && (
+                  <label className="flex items-center gap-2 text-[11px] text-gray-600">
+                    <input type="checkbox" checked={reco.supplement !== false} onChange={e => setReco({ supplement: e.target.checked })} /> 편식 보충 1종목 넣기
+                  </label>
+                )}
+                {recommendation.lateNight && <p className="text-[11px] text-gray-600" data-reco-latenight>🌃 어제 야식이 있었어요. 끝나고 걷기나 트레드밀 10분은 어때요? (선택)</p>}
+                <p className="text-[11px] text-gray-600" data-reco-cardio>🏃 이번 주 유산소 {recommendation.cardio.minutes}/{recommendation.cardio.goal}분{recommendation.cardio.minutes < recommendation.cardio.goal ? ` · 끝나고 트레드밀 ${Math.min(30, Math.max(10, Math.round((recommendation.cardio.goal - recommendation.cardio.minutes) / 10) * 10))}분 어때요?` : ' · 목표 달성!'}</p>
+                <button type="button" disabled={!recoItems.length} onClick={startFromReco} data-reco-start
+                  className="w-full py-3 rounded-2xl bg-green-600 text-white font-bold disabled:opacity-50">이대로 시작 · {recoItems.length}종목 · 약 {recommendation.minutesPlanned}분</button>
+              </>
+            )}
+          </div>
+        );
+        const mdLabel = (d) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`;
+        const shortcutButton = (id, keys, text, wide) => {
+          const on = keys.every(k => picked.includes(k));
+          return (
+            <button key={id} type="button" data-shortcut={id}
+              onClick={() => update(s => ({ ...s, picked: on ? (s.picked || []).filter(k => !keys.includes(k)) : [...new Set([...(s.picked || []), ...keys])] }))}
+              className={`${wide ? 'col-span-2' : ''} text-left rounded-xl px-3 py-2 border ${on ? 'bg-green-50 border-green-300 text-green-800' : 'bg-gray-50 border-transparent text-gray-700'}`}>
+              {text(on)}
+            </button>
+          );
+        };
+        const listKeys = [...new Set([...placeKeys, ...picked])];
+        const start = () => {
+          const d = new Date();
+          setSession(s => ({
+            ...s, stage: 'run', startedAt: d.toISOString(),
+            date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
+            time: `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`,
+            items: (s.picked || []).map(k => entryFor(k)).filter(Boolean).map(e => makeSessionItem(e, plannedSetsFrom(history, e, s.location), places)),
+          }));
+          try { localStorage.setItem('workoutLastPlace', session.location); } catch { /* 기억 못 해도 동작 */ }
+          window.scrollTo(0, 0);
+        };
+        return (
+          <div className="p-4 space-y-4 animate-fade-in pb-32" data-workout-pick>
+            <div className="bg-white rounded-3xl p-5 shadow-sm">
+              <h2 className="font-bold text-lg text-gray-800 mb-3">🏋️ 어디서 운동하나요?</h2>
+              <div className="grid grid-cols-2 gap-1 bg-gray-50 p-1 rounded-xl">
+                {['company', 'apartment'].map(p => (
+                  <button key={p} type="button" onClick={() => update(s => ({ ...s, location: p }))} data-pick-place={p}
+                    className={`py-2 text-sm font-bold rounded-lg ${session.location === p ? 'bg-green-600 text-white' : 'text-gray-500'}`}>{WORKOUT_PLACE_LABELS[p]}</button>
+                ))}
+              </div>
+            </div>
+            {recoCard}
+            {(shortcuts.parts.length > 0 || shortcuts.full) && (
+              <div className="bg-white rounded-3xl p-4 shadow-sm" data-recent-sessions>
+                <h3 className="font-bold text-gray-800">최근 운동 그대로</h3>
+                <p className="text-[11px] text-gray-400 mb-2">부위를 여러 개 누르면 합쳐져요(예: 등 + 이두). 무게는 종목마다 가장 최근 기록으로 채워요.</p>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {shortcuts.parts.map(p => shortcutButton(p.key, p.keys, on => (
+                    <>
+                      <span className="block text-sm font-bold">{on ? '✓ ' : ''}{p.label}</span>
+                      <span className="block text-[11px] text-gray-400">{mdLabel(p.date)} · {p.keys.length}종목</span>
+                    </>
+                  )))}
+                  {shortcuts.full && shortcutButton('full', shortcuts.full.keys, on => (
+                    <>
+                      <span className="block text-sm font-bold">{on ? '✓ ' : ''}전신</span>
+                      <span className="block text-[11px] text-gray-400">{mdLabel(shortcuts.full.date)} · {shortcuts.full.parts.join('·')} {shortcuts.full.keys.length}종목</span>
+                    </>
+                  ), true)}
+                </div>
+              </div>
+            )}
+            <div className="bg-white rounded-3xl p-4 shadow-sm space-y-2" data-pick-list>
+              <h3 className="font-bold text-gray-800">{WORKOUT_PLACE_LABELS[session.location]} 종목에서 고르기</h3>
+              {listKeys.length === 0 && <p className="text-sm text-gray-400 py-2">{WORKOUT_PLACE_LABELS[session.location]} 목록이 비어 있어요. 아래에서 종목을 찾아 넣으세요.</p>}
+              {groupExercisesByPart(listKeys, k => entryFor(k)).map(g => (
+                <div key={g.key} data-pick-group={g.key}>
+                  <p className="text-xs font-bold text-gray-500 mt-2 mb-1">{g.label}</p>
+                  <div className="space-y-1">
+                    {g.items.map(key => {
+                      const on = picked.includes(key);
+                      return (
+                        <div key={key} className={`flex items-center gap-2 rounded-xl px-2 py-1.5 ${on ? 'bg-green-50' : ''}`} data-pick-row={key}>
+                          <button type="button" onClick={() => toggle(key)} aria-label={`${placeExerciseName(key, byKey)} ${on ? '빼기' : '고르기'}`}
+                            className={`w-6 h-6 shrink-0 rounded-md border-2 flex items-center justify-center text-xs font-bold ${on ? 'bg-green-600 border-green-600 text-white' : 'border-gray-300 text-transparent'}`}>✓</button>
+                          <ExerciseThumb entry={entryFor(key)} library={library} />
+                          <span className="min-w-0 flex-1 text-sm">
+                            {nameButton(key, placeExerciseName(key, byKey))}
+                            <span className="block text-[11px] text-gray-400 truncate">{placeKeys.includes(key) ? '' : <span className="text-amber-600 font-bold">목록에 없음 · </span>}{lastLine(key)}</span>
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+            {searchOpen ? searchPanel : (
+              <button type="button" onClick={() => setSearchOpen(true)} className="w-full py-3 rounded-2xl bg-white border border-gray-200 text-gray-600 font-bold text-sm">+ 목록에 없는 종목 찾기</button>
+            )}
+            {cancelBox}
+            {/* 직접 고른 종목이 있을 때만 아래에 띄운다(없을 때는 추천 카드의 [이대로 시작]을 가리지 않게) */}
+            {picked.length > 0 && (
+              <div className="fixed left-0 right-0 bottom-[calc(env(safe-area-inset-bottom)+140px)] z-30 px-4">
+                <button type="button" onClick={start} data-session-start
+                  className="w-full max-w-lg mx-auto block py-3.5 rounded-2xl bg-green-600 text-white font-bold shadow-xl">
+                  직접 고른 {picked.length}종목으로 시작
+                </button>
+              </div>
+            )}
+            {undoToast}
+          </div>
+        );
+      }
+
+      // ── 3. 끝내기
+      if (session.stage === 'finish') {
+        const endMs = session.editLogId && session.editEndedAt ? Date.parse(session.editEndedAt) : Date.now();
+        const row = buildWorkoutLog(session, endMs);
+        const unchecked = session.items.reduce((n, it) => n + it.sets.filter(s => !s.done && setHasValue(it, s)).length, 0);
+        const save = async () => { setSaving(true); await onSaveLog(session); setSaving(false); };
+        return (
+          <div className="p-4 space-y-4 animate-fade-in" data-workout-finish>
+            <div className="bg-white rounded-3xl p-5 shadow-sm">
+              <h2 className="font-bold text-lg text-gray-800 mb-1">{row.food_name}</h2>
+              <p className="text-sm text-green-700 font-bold mb-3">{row.analysis.replace(/ · (쉬웠어요|적당했어요|힘들었어요)$/, '')}</p>
+              <div className="space-y-1">
+                {row.ingredients.map((line, i) => <p key={i} className="text-xs text-gray-600 leading-relaxed">{line}</p>)}
+              </div>
+            </div>
+            {unchecked > 0 && (
+              <div className="bg-amber-50 rounded-2xl p-3 text-sm text-amber-900" data-unchecked>
+                <p className="font-bold mb-2">체크하지 않은 세트 {unchecked}개는 저장되지 않아요.</p>
+                <button type="button" onClick={() => update(s => ({ ...s, items: s.items.map(it => ({ ...it, sets: it.sets.map(st => setHasValue(it, st) ? { ...st, done: true } : st) })) }))}
+                  className="text-xs font-bold bg-white border border-amber-200 px-2.5 py-1.5 rounded-lg">모두 했음으로 표시</button>
+              </div>
+            )}
+            <div className="bg-white rounded-3xl p-4 shadow-sm">
+              <h3 className="font-bold text-gray-800 mb-2">오늘 운동은 어땠나요?</h3>
+              <div className="grid grid-cols-3 gap-2">
+                {[['easy', '쉬웠어요'], ['ok', '적당'], ['hard', '힘들었어요']].map(([v, label]) => (
+                  <button key={v} type="button" onClick={() => update(s => ({ ...s, rating: s.rating === v ? null : v }))} data-rating={v}
+                    className={`py-2.5 rounded-xl text-sm font-bold border ${session.rating === v ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-200'}`}>{label}</button>
+                ))}
+              </div>
+            </div>
+            {duplicates > 0 && !session.editLogId && (
+              <p className="bg-blue-50 rounded-2xl p-3 text-sm text-blue-900" data-duplicate-warning>오늘 운동 기록이 이미 {duplicates}개 있어요. 같은 운동을 캡처로도 올렸다면 하나는 지워 주세요. 저장하면 따로 추가돼요.</p>
+            )}
+            <button type="button" disabled={saving || !row.ingredients.length} onClick={save} data-session-save
+              className="w-full py-3.5 rounded-2xl bg-green-600 text-white font-bold disabled:opacity-50">
+              {saving ? '저장 중' : !row.ingredients.length ? '저장할 세트가 없어요' : (session.editLogId ? '고친 내용 저장' : (duplicates > 0 ? '따로 저장' : '기록 저장'))}
+            </button>
+            <button type="button" onClick={() => update(s => ({ ...s, stage: 'run' }))} className="w-full py-3 rounded-2xl bg-white border border-gray-200 text-gray-600 font-bold text-sm">← 계속하기</button>
+          </div>
+        );
+      }
+
+      // ── 2. 진행
+      const elapsed = session.startedAt ? (now - Date.parse(session.startedAt)) / 1000 : 0;
+      const restLeft = session.rest?.endsAt ? (session.rest.endsAt - now) / 1000 : 0;
+      const doneCount = session.items.reduce((n, it) => n + it.sets.filter(s => s.done).length, 0);
+      const totalCount = session.items.reduce((n, it) => n + it.sets.length, 0);
+      const removeItem = (idx, forever) => {
+        const item = session.items[idx];
+        update(s => ({ ...s, items: s.items.filter((_, i) => i !== idx), skippedToday: forever ? (s.skippedToday || []) : [...(s.skippedToday || []), item.key] }));
+        if (forever) onSavePlaces({ ...places, [session.location]: placeKeys.filter(k => k !== item.key) });
+        setRemoving(null); setEditing(null);
+        const part = String(item.targets?.[0] || '').split('.')[0];
+        const skip = new Set([...sessionKeys, ...(session.skippedToday || []), item.key]);
+        const keys = placeKeys.filter(k => !skip.has(k) && String(entryFor(k)?.targets?.[0] || '').split('.')[0] === part).slice(0, 3);
+        setAlternatives({ part: EXERCISE_PARTS.find(p => p.key === part)?.label || '', keys });
+      };
+      const move = (idx, dir) => update(s => {
+        const items = [...s.items]; const j = idx + dir;
+        if (j < 0 || j >= items.length) return s;
+        [items[idx], items[j]] = [items[j], items[idx]];
+        return { ...s, items };
+      });
+      const stepper = (label, value, step, unit, onChange) => (
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs text-gray-500 w-8 shrink-0">{label}</span>
+          <button type="button" onClick={() => onChange(Math.max(0, roundWeight((Number(value) || 0) - step)))} className="w-11 h-10 rounded-lg bg-gray-100 font-bold text-gray-700">−{step}</button>
+          <input type="number" inputMode="decimal" value={value ?? ''} onChange={e => onChange(e.target.value === '' ? null : Math.max(0, Number(e.target.value)))}
+            className="w-16 h-10 text-center border border-gray-200 rounded-lg font-bold" />
+          <button type="button" onClick={() => onChange(roundWeight((Number(value) || 0) + step))} className="w-11 h-10 rounded-lg bg-gray-100 font-bold text-gray-700">+{step}</button>
+          <span className="text-xs text-gray-500">{unit}</span>
+        </div>
+      );
+      return (
+        <div className={`p-4 space-y-3 animate-fade-in ${restLeft > 0 ? 'pb-28' : 'pb-8'}`} data-workout-run>
+          {session.plan?.comment && (
+            <div className="bg-green-50 border border-green-200 rounded-2xl px-4 py-3 text-sm text-green-900 leading-relaxed" data-coach-comment>🗣 {session.plan.comment}</div>
+          )}
+          <div className="bg-white rounded-2xl shadow-sm px-4 py-2.5" data-run-status>
+            <div className="flex items-center justify-between text-sm">
+              <span className="font-bold text-gray-800">{session.editLogId ? '✏️ 기록 고치기' : `⏱ ${formatClock(elapsed)}`} · {WORKOUT_PLACE_LABELS[session.location]}</span>
+              <span className="flex items-center gap-2">
+                <button type="button" onClick={toggleSound} data-sound-toggle aria-label={soundOn ? '카운트다운 소리 끄기' : '카운트다운 소리 켜기'}
+                  className={`text-xs font-bold px-2 py-1 rounded-lg ${soundOn ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-400'}`}>{soundOn ? '🔔' : '🔕'}</button>
+                <span className="text-xs font-bold text-green-700">세트 {doneCount}/{totalCount}</span>
+              </span>
+            </div>
+            {restLeft > 0 && (
+              // 쉬는 시간은 화면을 내려도 보이도록 아래쪽에 띄운다(+ 버튼 위).
+              <div className="fixed left-3 right-3 bottom-[calc(env(safe-area-inset-bottom)+136px)] z-40 max-w-lg mx-auto bg-white rounded-2xl shadow-xl border border-green-100 px-3 py-2.5 flex items-center gap-2" data-rest-timer>
+                <span className="text-xs font-bold text-gray-500 shrink-0">쉬는 시간</span>
+                <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
+                  <div className="h-full bg-green-500 transition-all" style={{ width: `${Math.min(100, (restLeft / (session.rest.total || 60)) * 100)}%` }}></div>
+                </div>
+                <span className="text-sm font-extrabold text-green-700 w-12 text-right">{formatClock(restLeft)}</span>
+                <button type="button" onClick={() => adjustRest(-10)} data-rest-minus className="text-xs font-bold text-gray-600 bg-gray-100 px-2 py-1 rounded-lg">−10초</button>
+                <button type="button" onClick={() => adjustRest(10)} data-rest-plus className="text-xs font-bold text-gray-600 bg-gray-100 px-2 py-1 rounded-lg">+10초</button>
+                <button type="button" onClick={() => update(s => ({ ...s, rest: null }))} className="text-xs font-bold text-gray-600 bg-gray-100 px-2 py-1 rounded-lg">건너뛰기</button>
+              </div>
+            )}
+          </div>
+          {alternatives && (
+            <div className="bg-amber-50 rounded-2xl p-3" data-alternatives>
+              <div className="flex items-center justify-between mb-1.5">
+                <p className="text-xs font-bold text-amber-900">{alternatives.keys.length ? `대신 할 ${alternatives.part} 운동` : `${WORKOUT_PLACE_LABELS[session.location]} 목록에 다른 ${alternatives.part} 운동이 없어요`}</p>
+                <button type="button" onClick={() => setAlternatives(null)} className="text-xs text-amber-700 font-bold">닫기</button>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {alternatives.keys.map(k => (
+                  <button key={k} type="button" onClick={() => addExercise(k)} className="text-xs font-bold text-amber-900 bg-white border border-amber-200 px-2 py-1 rounded-lg">+ {placeExerciseName(k, byKey)}</button>
+                ))}
+                <button type="button" onClick={() => { setAlternatives(null); setSearchOpen(true); }} className="text-xs font-bold text-gray-600 bg-white border border-gray-200 px-2 py-1 rounded-lg">찾기</button>
+              </div>
+            </div>
+          )}
+          {session.items.map((item, idx) => (
+            <div key={item.key + idx} className="bg-white rounded-3xl p-4 shadow-sm" data-session-item={item.key}>
+              <div className="flex items-start justify-between gap-2 mb-2">
+                <div className="min-w-0 text-sm">
+                  {item.supplement ? <span className="text-[11px] font-bold text-amber-700 mr-1">+ 보충</span> : null}{nameButton(item.key, item.name)}
+                  {item.reason && <span className={`block text-[11px] font-bold ${item.change === 'up' ? 'text-green-700' : item.change === 'down' ? 'text-blue-600' : 'text-gray-500'}`} data-item-reason>{{ up: '↑ ', hold: '= ', down: '↓ ', new: '' }[item.change] || ''}{item.reason}</span>}
+                  <span className="block text-[11px] text-gray-400">
+                    {item.equipment === 'dumbbell' ? '한 손 무게 · ' : ''}{item.last ? `지난번 ${Number(item.last.date.slice(5, 7))}/${Number(item.last.date.slice(8, 10))}` : (session.editLogId ? '' : '처음 · 첫 세트를 입력하면 아래로 복사돼요')}
+                  </span>
+                  <button type="button" onClick={() => setRestEditing(restEditing === idx ? null : idx)} data-rest-label
+                    className="text-[11px] font-bold text-green-700 underline decoration-dotted underline-offset-2">
+                    쉬는 시간 {item.restSec}초{places.restByKey?.[item.key] ? ' · 직접 정함' : ''}
+                  </button>
+                </div>
+                <div className="flex gap-1 shrink-0">
+                  <button type="button" onClick={() => move(idx, -1)} aria-label="위로" className="w-7 h-7 rounded-lg bg-gray-50 text-gray-500 text-xs">↑</button>
+                  <button type="button" onClick={() => move(idx, 1)} aria-label="아래로" className="w-7 h-7 rounded-lg bg-gray-50 text-gray-500 text-xs">↓</button>
+                  <button type="button" onClick={() => setRemoving(removing === idx ? null : idx)} className="h-7 px-2 rounded-lg bg-gray-50 text-gray-500 text-xs font-bold">빼기</button>
+                </div>
+              </div>
+              {restEditing === idx && (
+                <div className="bg-green-50 rounded-xl p-2.5 mb-2" data-rest-chooser>
+                  <p className="text-[11px] text-green-800 mb-1.5">이 종목의 쉬는 시간(다음에도 기억해요)</p>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button type="button" onClick={() => setItemRest(item, Math.max(REST_MIN_SEC, item.restSec - 10))} className="text-xs font-bold bg-white px-2 py-1.5 rounded-lg border border-green-200">−10</button>
+                    {[45, 60, 80, 90, 120].map(sec => (
+                      <button key={sec} type="button" onClick={() => setItemRest(item, sec)} data-rest-choice={sec}
+                        className={`text-xs font-bold px-2 py-1.5 rounded-lg border ${item.restSec === sec ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-700 border-green-200'}`}>{sec}초</button>
+                    ))}
+                    <button type="button" onClick={() => setItemRest(item, Math.min(REST_MAX_SEC, item.restSec + 10))} className="text-xs font-bold bg-white px-2 py-1.5 rounded-lg border border-green-200">+10</button>
+                    {places.restByKey?.[item.key] && <button type="button" onClick={() => setItemRest(item, null)} className="text-xs font-bold text-gray-500 px-2 py-1.5">기본값으로</button>}
+                  </div>
+                </div>
+              )}
+              {removing === idx && (
+                <div className="flex flex-wrap gap-1.5 mb-2" data-remove-menu>
+                  <button type="button" onClick={() => removeItem(idx, false)} className="text-xs font-bold bg-gray-100 text-gray-700 px-2.5 py-1.5 rounded-lg">오늘만 없어요</button>
+                  {!session.editLogId && <button type="button" onClick={() => removeItem(idx, true)} className="text-xs font-bold bg-red-50 text-red-600 px-2.5 py-1.5 rounded-lg">이제 없어요 ({WORKOUT_PLACE_LABELS[session.location]} 목록에서 빼기)</button>}
+                  <button type="button" onClick={() => setRemoving(null)} className="text-xs font-bold text-gray-400 px-2 py-1.5">취소</button>
+                </div>
+              )}
+              <div className="space-y-1.5">
+                {item.sets.map((st, j) => {
+                  const isEditing = editing && editing.item === idx && editing.set === j;
+                  const text = formatSessionSet(item, st);
+                  return (
+                    <div key={j} data-session-set={j}>
+                      <div className={`flex items-center gap-2 rounded-xl px-2 py-1.5 ${st.done ? 'bg-green-50' : 'bg-gray-50'}`}>
+                        <span className="w-5 text-xs font-bold text-gray-400 text-center">{j + 1}</span>
+                        <button type="button" onClick={() => setEditing(isEditing ? null : { item: idx, set: j })} data-set-value
+                          className={`flex-1 text-left font-bold ${text ? 'text-gray-800' : 'text-gray-400'}`}>
+                          {text || '입력'}{st.failed ? <span className="ml-1.5 text-[11px] text-red-500">실패</span> : null}
+                        </button>
+                        <button type="button" onClick={() => toggleDone(idx, j)} aria-label={`${j + 1}세트 ${st.done ? '취소' : '완료'}`} data-set-done={st.done ? 'yes' : 'no'}
+                          className={`w-10 h-10 rounded-full border-2 flex items-center justify-center text-lg font-bold ${st.done ? 'bg-green-600 border-green-600 text-white' : 'border-gray-300 text-gray-300'}`}>✓</button>
+                      </div>
+                      {isEditing && (
+                        <div className="mt-1.5 mb-2 bg-gray-50 rounded-xl p-3 space-y-2" data-set-editor>
+                          {item.input !== 'hold' && (item.input === 'weight' || item.key === 'weighted-pull-up') && stepper('무게', st.weight, WEIGHT_STEP, 'kg', v => updateSet(idx, j, { weight: v }))}
+                          {item.input !== 'hold' && stepper('횟수', st.reps, 1, '회', v => updateSet(idx, j, { reps: v == null ? null : Math.round(v) }))}
+                          {item.input === 'hold' && stepper('시간', st.seconds, 5, '초', v => updateSet(idx, j, { seconds: v == null ? null : Math.round(v) }))}
+                          <div className="flex flex-wrap gap-1.5 pt-1">
+                            <button type="button" onClick={() => updateSet(idx, j, { failed: !st.failed })}
+                              className={`text-xs font-bold px-2.5 py-1.5 rounded-lg border ${st.failed ? 'bg-red-50 text-red-600 border-red-200' : 'bg-white text-gray-600 border-gray-200'}`}>{st.failed ? '✓ ' : ''}실패(목표 못 채움)</button>
+                            {j < item.sets.length - 1 && <button type="button" onClick={() => sameForRest(idx, j)} className="text-xs font-bold px-2.5 py-1.5 rounded-lg bg-white text-gray-600 border border-gray-200">남은 세트도 같게</button>}
+                            <button type="button" onClick={() => { setEditing(null); if (!st.done && setHasValue(item, st)) toggleDone(idx, j); }}
+                              className="text-xs font-bold px-2.5 py-1.5 rounded-lg bg-green-600 text-white">{st.done ? '닫기' : '했어요 ✓'}</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="flex gap-2 mt-2">
+                <button type="button" onClick={() => updateItem(idx, it => { const lastSet = it.sets[it.sets.length - 1] || emptySet(); return { ...it, sets: [...it.sets, { ...emptySet(), weight: lastSet.weight, reps: lastSet.reps, seconds: lastSet.seconds }] }; })}
+                  className="text-xs font-bold text-green-700 bg-green-50 px-2.5 py-1.5 rounded-lg">+ 세트</button>
+                {item.sets.length > 1 && !item.sets[item.sets.length - 1].done && (
+                  <button type="button" onClick={() => updateItem(idx, it => ({ ...it, sets: it.sets.slice(0, -1) }))} className="text-xs font-bold text-gray-500 bg-gray-50 px-2.5 py-1.5 rounded-lg">− 세트</button>
+                )}
+              </div>
+            </div>
+          ))}
+          {session.items.length === 0 && <p className="text-sm text-gray-400 text-center py-4">종목이 없어요. 아래에서 넣어 주세요.</p>}
+          {searchOpen ? searchPanel : (
+            <button type="button" onClick={() => setSearchOpen(true)} className="w-full py-3 rounded-2xl bg-white border border-gray-200 text-gray-600 font-bold text-sm" data-add-exercise>+ 종목 넣기</button>
+          )}
+          <button type="button" onClick={() => { setEditing(null); update(s => ({ ...s, stage: 'finish', rest: null })); window.scrollTo(0, 0); }} data-session-finish
+            className="w-full py-3.5 rounded-2xl bg-green-600 text-white font-bold">{session.editLogId ? '다 고쳤어요' : '운동 끝내기'}</button>
+          {cancelBox}
+          {undoToast}
+        </div>
+      );
+    }
+
+    // ★ v0.5.2 운동 탭: 지금은 장소 설정(처음 설정, 회사·아파트 종목, 집 장비). 코치는 다음 시험판에서.
+    function WorkoutTab({ exerciseLib, places, onSave, loadRecords, onShowInfo, session, setSession, onSaveLog, checkDuplicate, loadYesterday }) {
+      // ★ v0.5.3 직접 추가한 종목도 사전처럼 쓴다(부위 묶음·빈 부위·검색·기록 이름 찾기).
+      const hasCustom = Object.keys(places?.customExercises || {}).length > 0;
+      const library = hasCustom ? mergeCustomLibrary(exerciseLib?.library, places) : (exerciseLib?.library || null);
+      const index = hasCustom && library ? buildExerciseIndex(library) : (exerciseLib?.index || null);
+      const byKey = new Map((library?.exercises || []).map(e => [e.key, e]));
+      const [view, setView] = useState('main'); // main | setup | company | apartment | home | discover
+      const [allLogs, setAllLogs] = useState(null); // 기록에서 찾은 새 운동용 내 운동 기록
+      const [draft, setDraft] = useState(null); // 추가 중인 새 운동 { key, name, targets, equipment, place }
+      useEffect(() => {
+        let alive = true;
+        loadRecords().then(logs => { if (alive) setAllLogs(logs); }).catch(() => { if (alive) setAllLogs([]); });
+        return () => { alive = false; };
+      }, []);
+      const [records, setRecords] = useState(null);
+      const [recordsError, setRecordsError] = useState(false);
+      const [choices, setChoices] = useState({});
+      const [homeEq, setHomeEq] = useState([]);
+      const [saving, setSaving] = useState(false);
+      const [query, setQuery] = useState('');
+      const [adding, setAdding] = useState(false);
+      const [partFilter, setPartFilter] = useState(null); // 빈 부위 안내에서 고른 세부 부위('core.obliques')
+      const [collapsed, setCollapsed] = useState(() => new Set()); // 접은 부위 묶음 ('company:chest')
+      const [settingsOpen, setSettingsOpen] = useState(false); // ★ v0.5.4 운동 설정(쉬는 시간·소리)
+      const current = places || emptyWorkoutPlaces();
+      const setupDone = current.setupDone;
+
+      const save = async (next) => {
+        setSaving(true);
+        const ok = await onSave(next);
+        setSaving(false);
+        return ok;
+      };
+      const goMain = () => { setView('main'); setQuery(''); setAdding(false); setPartFilter(null); setDraft(null); window.scrollTo(0, 0); };
+      const openPlace = (key) => { setView(key); setQuery(''); setAdding(false); setPartFilter(null); window.scrollTo(0, 0); };
+      const closeSearch = () => { setAdding(false); setQuery(''); setPartFilter(null); };
+      const startSetup = async () => {
+        setView('setup'); setRecords(null); setRecordsError(false); window.scrollTo(0, 0);
+        setHomeEq(setupDone ? current.homeEquipment : ['pullup_bar']);
+        try {
+          const list = collectRecordedExercises(await loadRecords(), index);
+          const init = {};
+          // 목록을 이미 만들었으면(처음 설정을 안 거쳤어도) 지금 목록에서 시작한다.
+          const hasLists = setupDone || current.company.length > 0 || current.apartment.length > 0;
+          list.forEach(r => { init[r.key] = hasLists ? choiceFromPlaces(current, r.key) : 'both'; });
+          setChoices(init);
+          setRecords(list);
+        } catch {
+          setRecordsError(true);
+          setRecords([]);
+        }
+      };
+      const finishSetup = async () => {
+        const next = { ...applyPlaceChoices(current, records || [], choices), homeEquipment: homeEq };
+        if (await save(next)) goMain();
+      };
+      const nameButton = (key, name) => {
+        const entry = byKey.get(key);
+        if (entry?.custom) {
+          // 직접 추가한 종목은 설명이 없어 유튜브 자세 검색만 연결한다.
+          return (
+            <span className="font-bold text-gray-800" data-custom-exercise>{name}
+              <a href={`https://www.youtube.com/results?search_query=${encodeURIComponent(name + ' 자세')}`} target="_blank" rel="noopener noreferrer"
+                className="ml-1 text-[11px] font-bold text-red-600" aria-label={`${name} 자세 영상 찾기`}>▶영상</a>
+            </span>
+          );
+        }
+        return entry ? (
+          <button type="button" onClick={() => onShowInfo(entry)} data-exercise-name
+            className="font-bold text-green-800 underline decoration-dotted underline-offset-2 text-left">{name} ⓘ</button>
+        ) : <span className="font-bold text-gray-700">{name}</span>;
+      };
+      const shortDate = (d) => d ? `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}` : '';
+      const targetsText = (entry) => {
+        const labels = shortTargetLabels(entry);
+        return labels.length ? <span className="text-[11px] text-gray-400 ml-1.5" data-targets>{labels.join('·')}</span> : null;
+      };
+      // 부위 묶음: 제목을 누르면 접고 편다(처음에는 모두 펼침).
+      const partGroups = (scope, groups, renderItem) => groups.map(g => {
+        const id = `${scope}:${g.key}`;
+        const closed = collapsed.has(id);
+        return (
+          <div key={g.key} className="border-b border-gray-100 last:border-0 pb-2 last:pb-0" data-part-group={g.key}>
+            <button type="button" onClick={() => setCollapsed(prev => { const next = new Set(prev); if (closed) next.delete(id); else next.add(id); return next; })}
+              className="w-full flex items-center justify-between py-1.5 text-left" aria-expanded={!closed}>
+              <span className="font-bold text-gray-800">{g.label} <span className="text-green-600 text-sm">{g.items.length}</span></span>
+              <span className="text-xs text-gray-400">{closed ? '▸' : '▾'}</span>
+            </button>
+            {!closed && <div className="space-y-2 pt-1 pb-1">{g.items.map(renderItem)}</div>}
+          </div>
+        );
+      });
+      // 빈 부위 안내: 회사·아파트는 누르면 그 부위 종목 검색으로, 집은 안내만.
+      const missingNotice = (entries, placeLabel, onPick) => {
+        const missing = missingSubParts(entries);
+        if (!missing.length) return null;
+        return (
+          <div className="bg-amber-50 rounded-2xl p-3" data-missing-parts>
+            <p className="text-xs font-bold text-amber-800 mb-2">{placeLabel} 목록에 없는 부위 {missing.length}곳</p>
+            <div className="flex flex-wrap gap-1.5">
+              {missing.map(m => onPick ? (
+                <button key={m.target} type="button" onClick={() => onPick(m.target)} data-missing-part={m.target}
+                  className="text-xs font-bold text-amber-900 bg-white border border-amber-200 px-2 py-1 rounded-lg">{m.part}·{m.label} +</button>
+              ) : (
+                <span key={m.target} data-missing-part={m.target} className="text-xs font-bold text-amber-900 bg-white border border-amber-200 px-2 py-1 rounded-lg">{m.part}·{m.label}</span>
+              ))}
+            </div>
+            <p className="text-[11px] text-amber-700 mt-2 leading-relaxed">{onPick
+              ? '코치가 덜 한 부위를 채워 주려면 그 부위 운동이 이 장소에 있어야 해요. 눌러서 추가할 종목을 찾아보세요.'
+              : '집에 기구를 더 고르면 채워질 수 있어요.'}</p>
+          </div>
+        );
+      };
+      const targetLabel = (target) => {
+        const m = missingSubParts([]).find(x => x.target === target);
+        return m ? `${m.part}·${m.label}` : '';
+      };
+
+      if (library && session) {
+        return <WorkoutSession session={session} setSession={setSession} library={library} index={index} byKey={byKey} places={current}
+          onSavePlaces={onSave} allLogs={allLogs} onShowInfo={onShowInfo} onSaveLog={onSaveLog} checkDuplicate={checkDuplicate} loadYesterday={loadYesterday} />;
+      }
+
+      if (!library) {
+        return (
+          <div className="p-4 animate-fade-in" data-workout-tab>
+            <div className="bg-white rounded-3xl p-5 text-sm text-gray-500 text-center">종목 사전을 불러오는 중이에요. 인터넷 연결을 확인해 주세요.</div>
+          </div>
+        );
+      }
+
+      if (view === 'setup') {
+        const list = records || [];
+        return (
+          <div className="p-4 space-y-4 animate-fade-in" data-workout-setup>
+            <button type="button" onClick={goMain} className="text-sm font-bold text-gray-500">← 운동</button>
+            <div className="bg-white rounded-3xl p-5 shadow-sm">
+              <h2 className="font-bold text-lg text-gray-800 mb-1">어디서 한 운동인가요?</h2>
+              <p className="text-xs text-gray-500 leading-relaxed">지금까지 기록한 근력 운동이에요. 두 곳 다 있으면 그대로 두고, 한 곳에만 있는 것만 바꾸세요. 하지 않을 운동은 '안 함'으로 두세요. 나중에 언제든 고칠 수 있어요.</p>
+            </div>
+            {records === null && <p className="text-sm text-blue-500 font-bold animate-pulse px-1">운동 기록을 불러오는 중입니다.</p>}
+            {recordsError && <p className="text-sm text-red-500 font-bold px-1">운동 기록을 불러오지 못했어요. 장비만 고르고 종목은 나중에 추가해도 돼요.</p>}
+            {records !== null && !recordsError && list.length === 0 && (
+              <p className="text-sm text-gray-500 px-1">기록된 근력 운동이 아직 없어요. 장소별 화면에서 종목을 직접 추가할 수 있어요.</p>
+            )}
+            {list.length > 0 && (
+              <div className="bg-white rounded-3xl p-4 shadow-sm space-y-2" data-setup-list>
+                {partGroups('setup', groupExercisesByPart(list, r => r.entry), r => (
+                  <div key={r.key} className="pb-2" data-setup-row={r.key}>
+                    <div className="flex items-baseline justify-between gap-2 mb-1.5 text-sm">
+                      <span className="min-w-0">{nameButton(r.key, r.name)}{targetsText(r.entry)}</span>
+                      <span className="text-[11px] text-gray-400 whitespace-nowrap">{r.count}번 · 마지막 {shortDate(r.lastDate)}</span>
+                    </div>
+                    <div className="grid grid-cols-4 gap-1 bg-gray-50 p-1 rounded-xl">
+                      {PLACE_CHOICES.map(([value, label]) => (
+                        <button key={value} type="button" onClick={() => setChoices(c => ({ ...c, [r.key]: value }))}
+                          className={`py-1.5 text-xs font-bold rounded-lg transition ${(choices[r.key] || 'both') === value ? (value === 'none' ? 'bg-gray-600 text-white' : 'bg-green-600 text-white') : 'text-gray-500'}`}>{label}</button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="bg-white rounded-3xl p-4 shadow-sm" data-setup-home>
+              <h3 className="font-bold text-gray-800 mb-1">🏠 집에 있는 운동 기구</h3>
+              <p className="text-xs text-gray-500 mb-3">맨몸 운동은 항상 들어가요. 있는 것만 고르세요.</p>
+              <div className="flex flex-wrap gap-2">
+                {HOME_EQUIPMENT_OPTIONS.map(([value, label]) => {
+                  const on = homeEq.includes(value);
+                  return (
+                    <button key={value} type="button" onClick={() => setHomeEq(eq => on ? eq.filter(x => x !== value) : [...eq, value])}
+                      className={`px-3 py-2 rounded-xl text-sm font-bold border transition ${on ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-500 border-gray-200'}`}>{on ? '✓ ' : ''}{label}</button>
+                  );
+                })}
+              </div>
+            </div>
+            <button type="button" disabled={saving || records === null} onClick={finishSetup}
+              className="w-full py-3.5 rounded-2xl bg-green-600 text-white font-bold disabled:opacity-50 active:scale-[0.98] transition">{saving ? '저장 중' : '이대로 저장'}</button>
+          </div>
+        );
+      }
+
+      const discovered = allLogs ? discoverExercises(allLogs, index, current) : [];
+      if (view === 'discover') {
+        const startDraft = (r) => setDraft({ key: r.key, name: r.name, targets: [], equipment: 'machine', place: 'both' });
+        const toggleTarget = (t) => setDraft(d => ({ ...d, targets: d.targets.includes(t) ? d.targets.filter(x => x !== t) : [...d.targets, t].slice(0, 3) }));
+        const saveDraft = async () => {
+          const d = draft;
+          const add = (list, on) => on && !list.includes(d.key) ? [...list, d.key] : list;
+          const next = {
+            ...current,
+            customExercises: { ...(current.customExercises || {}), [d.key]: { name: d.name, targets: d.targets, equipment: d.equipment } },
+            company: add(current.company, ['both', 'company'].includes(d.place)),
+            apartment: add(current.apartment, ['both', 'apartment'].includes(d.place)),
+          };
+          if (await save(next)) setDraft(null);
+        };
+        const ignore = (r) => save({ ...current, ignored: [...(current.ignored || []), r.key] });
+        const ignoredCount = (current.ignored || []).length;
+        return (
+          <div className="p-4 space-y-4 animate-fade-in" data-workout-discover>
+            <button type="button" onClick={goMain} className="text-sm font-bold text-gray-500">← 운동</button>
+            <div className="bg-white rounded-3xl p-5 shadow-sm">
+              <h2 className="font-bold text-lg text-gray-800 mb-1">🔎 기록에서 찾은 새 운동</h2>
+              <p className="text-xs text-gray-500 leading-relaxed">기록에는 있는데 종목 사전에 없는 이름이에요. 운동이면 부위만 골라 추가하고, 운동이 아니면 '운동 아님'을 누르세요.</p>
+            </div>
+            {allLogs === null && <p className="text-sm text-blue-500 font-bold animate-pulse px-1">운동 기록을 불러오는 중입니다.</p>}
+            {allLogs !== null && discovered.length === 0 && (
+              <p className="text-sm text-gray-500 px-1">새로 찾은 운동이 없어요. 기록한 운동이 모두 사전에 있어요.</p>
+            )}
+            {discovered.map(r => (
+              <div key={r.key} className="bg-white rounded-3xl p-4 shadow-sm" data-discovered={r.key}>
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="font-bold text-gray-800">{r.name}</span>
+                  <span className="text-[11px] text-gray-400 whitespace-nowrap">{r.count}번 · 마지막 {shortDate(r.lastDate)}</span>
+                </div>
+                {draft?.key !== r.key ? (
+                  <div className="grid grid-cols-2 gap-2 mt-3">
+                    <button type="button" onClick={() => startDraft(r)} className="py-2 rounded-xl bg-green-600 text-white text-sm font-bold">추가하기</button>
+                    <button type="button" disabled={saving} onClick={() => ignore(r)} className="py-2 rounded-xl bg-gray-100 text-gray-600 text-sm font-bold disabled:opacity-50">운동 아님</button>
+                  </div>
+                ) : (
+                  <div className="mt-3 space-y-3" data-discover-form>
+                    <div>
+                      <p className="text-xs font-bold text-gray-700 mb-1.5">주로 쓰는 부위 (1~3개, 처음 고른 것이 묶음 기준)</p>
+                      <div className="space-y-1.5">
+                        {EXERCISE_PARTS.map(p => (
+                          <div key={p.key} className="flex flex-wrap items-center gap-1">
+                            <span className="text-[11px] font-bold text-gray-400 w-8 shrink-0">{p.label}</span>
+                            {p.subs.map(([sub, label]) => {
+                              const t = `${p.key}.${sub}`;
+                              const order = draft.targets.indexOf(t);
+                              return (
+                                <button key={t} type="button" onClick={() => toggleTarget(t)} data-target-chip={t}
+                                  className={`px-2 py-1 rounded-lg text-xs font-bold border ${order >= 0 ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-200'}`}>
+                                  {order === 0 ? '① ' : ''}{label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-xs font-bold text-gray-700 mb-1.5">장비</p>
+                      <div className="flex flex-wrap gap-1">
+                        {CUSTOM_EQUIPMENT.map(eq => (
+                          <button key={eq} type="button" onClick={() => setDraft(d => ({ ...d, equipment: eq }))} data-equipment-chip={eq}
+                            className={`px-2 py-1 rounded-lg text-xs font-bold border ${draft.equipment === eq ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-200'}`}>{library.equipmentLabels?.[eq] || eq}</button>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-xs font-bold text-gray-700 mb-1.5">할 수 있는 곳</p>
+                      <div className="grid grid-cols-4 gap-1 bg-gray-50 p-1 rounded-xl">
+                        {PLACE_CHOICES.map(([value, label]) => (
+                          <button key={value} type="button" onClick={() => setDraft(d => ({ ...d, place: value }))}
+                            className={`py-1.5 text-xs font-bold rounded-lg ${draft.place === value ? (value === 'none' ? 'bg-gray-600 text-white' : 'bg-green-600 text-white') : 'text-gray-500'}`}>{label}</button>
+                        ))}
+                      </div>
+                      <p className="text-[11px] text-gray-400 mt-1">맨몸이나 집에 있는 기구로 하는 운동은 집 목록에도 자동으로 들어가요.</p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button type="button" onClick={() => setDraft(null)} className="py-2 rounded-xl bg-gray-100 text-gray-600 text-sm font-bold">취소</button>
+                      <button type="button" disabled={saving || draft.targets.length === 0} onClick={saveDraft}
+                        className="py-2 rounded-xl bg-green-600 text-white text-sm font-bold disabled:opacity-50">{saving ? '저장 중' : draft.targets.length ? '저장' : '부위를 골라 주세요'}</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+            {ignoredCount > 0 && (
+              <button type="button" disabled={saving} onClick={() => save({ ...current, ignored: [] })} className="w-full text-sm font-bold text-gray-500 py-2 disabled:opacity-50">
+                '운동 아님'으로 숨긴 이름 {ignoredCount}개 다시 보기
+              </button>
+            )}
+          </div>
+        );
+      }
+
+      if (view === 'company' || view === 'apartment') {
+        const place = WORKOUT_PLACES.find(p => p.key === view);
+        const keys = current[view];
+        const other = view === 'company' ? 'apartment' : 'company';
+        const results = adding ? searchExerciseLibrary(library, query, keys, partFilter).slice(0, 30) : [];
+        const update = (nextKeys) => save({ ...current, [view]: nextKeys });
+        const pickMissing = (target) => {
+          setAdding(true); setQuery(''); setPartFilter(target);
+          setTimeout(() => document.querySelector('[data-place-search]')?.scrollIntoView({ block: 'center', behavior: 'smooth' }), 50);
+        };
+        return (
+          <div className="p-4 space-y-4 animate-fade-in" data-workout-place={view}>
+            <button type="button" onClick={goMain} className="text-sm font-bold text-gray-500">← 운동</button>
+            <div className="bg-white rounded-3xl p-5 shadow-sm">
+              <h2 className="font-bold text-lg text-gray-800">{place.icon} {place.label}에서 할 수 있는 운동 <span className="text-green-600">{keys.length}</span></h2>
+              <p className="text-xs text-gray-500 mt-1">여기 없는 기구는 빼고, 새로 생긴 기구는 추가하세요. 코치는 이 목록 안에서만 추천해요.</p>
+            </div>
+            {missingNotice(keys.map(k => byKey.get(k)).filter(Boolean), place.label, pickMissing)}
+            <div className="bg-white rounded-3xl p-4 shadow-sm">
+              {keys.length === 0 && <p className="text-sm text-gray-400 text-center py-4">아직 종목이 없어요.</p>}
+              <div className="space-y-2">
+                {partGroups(view, groupExercisesByPart(keys, k => byKey.get(k)), key => (
+                  <div key={key} className="flex items-center justify-between gap-2 text-sm" data-place-exercise={key}>
+                    <div className="min-w-0">{nameButton(key, placeExerciseName(key, byKey))}{targetsText(byKey.get(key))}</div>
+                    <button type="button" disabled={saving} onClick={() => update(keys.filter(k => k !== key))}
+                      aria-label={`${placeExerciseName(key, byKey)} 빼기`} className="shrink-0 text-xs font-bold text-gray-500 bg-gray-100 px-2.5 py-1.5 rounded-lg disabled:opacity-50">빼기</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {!adding ? (
+              <div className="grid grid-cols-2 gap-2">
+                <button type="button" onClick={() => setAdding(true)} className="py-3 rounded-2xl bg-green-600 text-white font-bold text-sm">+ 종목 추가</button>
+                <button type="button" disabled={saving} onClick={() => update([...new Set([...keys, ...current[other]])])}
+                  className="py-3 rounded-2xl bg-white border border-gray-200 text-gray-600 font-bold text-sm disabled:opacity-50">{WORKOUT_PLACES.find(p => p.key === other).label} 목록 합치기</button>
+              </div>
+            ) : (
+              <div className="bg-white rounded-3xl p-4 shadow-sm" data-place-search>
+                <div className="flex gap-2 mb-3">
+                  <input value={query} onChange={e => setQuery(e.target.value)} placeholder="종목 이름 (예: 레그 컬, 풀다운)" autoFocus
+                    className="flex-1 min-w-0 border border-gray-200 rounded-xl px-3 py-2 text-sm" />
+                  <button type="button" onClick={closeSearch} className="text-sm font-bold text-gray-500 px-2">닫기</button>
+                </div>
+                {partFilter && (
+                  <button type="button" onClick={() => setPartFilter(null)} data-part-filter={partFilter}
+                    className="mb-3 text-xs font-bold text-amber-900 bg-amber-50 border border-amber-200 px-2 py-1 rounded-lg">{targetLabel(partFilter)} 운동만 보는 중 ✕</button>
+                )}
+                {results.length === 0 && <p className="text-xs text-gray-400 py-2">{partFilter ? '이 부위 종목은 모두 목록에 있거나 사전에 없어요.' : '찾는 종목이 사전에 없어요. 다른 이름으로 찾아보세요.'}</p>}
+                <div className="space-y-2 max-h-80 overflow-y-auto">
+                  {results.map(e => (
+                    <div key={e.key} className="flex items-center justify-between gap-2 text-sm" data-search-result={e.key}>
+                      <ExerciseThumb entry={e} library={library} />
+                      <div className="min-w-0 flex-1">
+                        {nameButton(e.key, e.name)}{targetsText(e)}
+                        <span className="text-[11px] text-gray-400 ml-1.5">· {library.equipmentLabels?.[e.equipment]}</span>
+                      </div>
+                      <button type="button" disabled={saving} onClick={() => update([...keys, e.key])}
+                        className="shrink-0 text-xs font-bold text-white bg-green-600 px-2.5 py-1.5 rounded-lg disabled:opacity-50">추가</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      if (view === 'home') {
+        const list = homeExercisesFor(library, current.homeEquipment);
+        const toggle = (value) => save({ ...current, homeEquipment: current.homeEquipment.includes(value) ? current.homeEquipment.filter(x => x !== value) : [...current.homeEquipment, value] });
+        return (
+          <div className="p-4 space-y-4 animate-fade-in" data-workout-place="home">
+            <button type="button" onClick={goMain} className="text-sm font-bold text-gray-500">← 운동</button>
+            <div className="bg-white rounded-3xl p-5 shadow-sm">
+              <h2 className="font-bold text-lg text-gray-800 mb-1">🏠 집에 있는 운동 기구</h2>
+              <p className="text-xs text-gray-500 mb-3">맨몸 운동은 항상 들어가요. 고른 기구로 하는 운동이 아래 목록에 더해져요.</p>
+              <div className="flex flex-wrap gap-2">
+                {HOME_EQUIPMENT_OPTIONS.map(([value, label]) => {
+                  const on = current.homeEquipment.includes(value);
+                  return (
+                    <button key={value} type="button" disabled={saving} onClick={() => toggle(value)}
+                      className={`px-3 py-2 rounded-xl text-sm font-bold border transition disabled:opacity-50 ${on ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-500 border-gray-200'}`}>{on ? '✓ ' : ''}{label}</button>
+                  );
+                })}
+              </div>
+            </div>
+            {missingNotice(list, '집', null)}
+            <div className="bg-white rounded-3xl p-4 shadow-sm">
+              <h3 className="font-bold text-gray-800 mb-2">집에서 할 수 있는 운동 <span className="text-green-600">{list.length}</span></h3>
+              <div className="space-y-2">
+                {partGroups('home', groupExercisesByPart(list, e => e), e => (
+                  <div key={e.key} className="flex items-center justify-between gap-2 text-sm" data-home-exercise={e.key}>
+                    <div className="min-w-0">{nameButton(e.key, e.name)}{targetsText(e)}</div>
+                    <span className="text-[11px] text-gray-400 shrink-0">{library.equipmentLabels?.[e.equipment]}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      const placeSummary = (p) => {
+        if (p.key === 'home') {
+          const eq = current.homeEquipment.map(v => (HOME_EQUIPMENT_OPTIONS.find(([o]) => o === v) || [])[1]).filter(Boolean);
+          const list = homeExercisesFor(library, current.homeEquipment);
+          return `맨몸${eq.length ? ' + ' + eq.join(', ') : ''} · ${list.length}종목 · 빈 부위 ${missingSubParts(list).length}곳`;
+        }
+        const keys = current[p.key];
+        return `${keys.length}종목${keys.length ? ` · 빈 부위 ${missingSubParts(keys.map(k => byKey.get(k)).filter(Boolean)).length}곳` : ''}`;
+      };
+      return (
+        <div className="p-4 space-y-4 animate-fade-in" data-workout-tab>
+          <button type="button" data-workout-start
+            onClick={() => { let lastPlace = 'company'; try { lastPlace = localStorage.getItem('workoutLastPlace') === 'apartment' ? 'apartment' : 'company'; } catch { /* 기본 회사 */ } setSession({ version: 1, stage: 'pick', location: lastPlace, picked: [], items: [], skippedToday: [], rest: null, rating: null }); window.scrollTo(0, 0); }}
+            className="w-full bg-gradient-to-br from-green-600 to-emerald-600 text-white rounded-3xl p-5 text-left shadow-md active:scale-[0.98] transition">
+            <span className="block font-extrabold text-xl">🏋️ 운동 시작</span>
+            <span className="block text-sm text-green-50 mt-1">종목을 고르면 지난번 무게가 미리 채워져요. 세트마다 ✓만 누르세요.</span>
+          </button>
+          <p className="text-xs text-gray-500 px-1 leading-relaxed">오늘 할 운동 추천은 다음 시험판에서 들어와요. 지금은 직접 고르거나 '최근 운동 그대로'를 쓰세요.</p>
+          {!setupDone && !current.company.length && !current.apartment.length && (
+            <button type="button" onClick={startSetup} className="w-full bg-green-600 text-white rounded-3xl p-5 text-left shadow-sm active:scale-[0.98] transition" data-workout-setup-start>
+              <span className="block font-bold text-lg">처음 설정 시작 (1~2분)</span>
+              <span className="block text-sm text-green-100 mt-1">지금까지 한 운동을 회사·아파트로 나누고, 집에 있는 기구를 골라요.</span>
+            </button>
+          )}
+          {discovered.length > 0 && (
+            <button type="button" onClick={() => { setDraft(null); setView('discover'); window.scrollTo(0, 0); }} data-discover-card
+              className="w-full bg-amber-50 border border-amber-200 rounded-3xl p-4 text-left active:bg-amber-100">
+              <span className="block font-bold text-amber-900">🔎 기록에서 찾은 새 운동 {discovered.length}개</span>
+              <span className="block text-xs text-amber-800 mt-1">사전에 없는 이름이에요. 부위만 고르면 추가돼요. ›</span>
+            </button>
+          )}
+          <div className="bg-white rounded-3xl p-4 shadow-sm space-y-2" data-workout-places>
+            <h3 className="font-bold text-gray-800 px-1 mb-1">장소별 운동</h3>
+            {WORKOUT_PLACES.map(p => (
+              <button key={p.key} type="button" onClick={() => openPlace(p.key)} className="w-full flex items-center gap-3 bg-gray-50 rounded-2xl px-4 py-3 text-left active:bg-gray-100" data-place-card={p.key}>
+                <span className="text-2xl">{p.icon}</span>
+                <span className="flex-1 min-w-0">
+                  <span className="block font-bold text-gray-800">{p.label}</span>
+                  <span className="block text-xs text-gray-500 truncate">{placeSummary(p)}</span>
+                </span>
+                <span className="text-xs font-bold text-green-700 whitespace-nowrap">보기·고치기 ›</span>
+              </button>
+            ))}
+          </div>
+          <div className="bg-white rounded-3xl p-4 shadow-sm" data-workout-settings>
+            <button type="button" onClick={() => setSettingsOpen(!settingsOpen)} className="w-full flex items-center justify-between" aria-expanded={settingsOpen}>
+              <span className="font-bold text-gray-800">⚙️ 운동 설정</span>
+              <span className="text-xs text-gray-500">쉬는 시간 {current.rest?.big || REST_DEFAULT_BIG}·{current.rest?.small || REST_DEFAULT_SMALL}초 · {restSoundOn(current) ? '🔔' : '🔕'} {settingsOpen ? '▾' : '▸'}</span>
+            </button>
+            {settingsOpen && (
+              <div className="mt-3 space-y-3">
+                {[['big', '큰 종목', '스쿼트·데드리프트·벤치·로우·프레스·풀업', REST_DEFAULT_BIG], ['small', '나머지 종목', '레이즈·컬·플라이·익스텐션 등', REST_DEFAULT_SMALL]].map(([k, label, hint, def]) => {
+                  const value = current.rest?.[k] || def;
+                  const setValue = (v) => save({ ...current, rest: { ...(current.rest || {}), [k]: Math.min(REST_MAX_SEC, Math.max(REST_MIN_SEC, v)) } });
+                  return (
+                    <div key={k} className="flex items-center justify-between gap-2" data-rest-default={k}>
+                      <span className="min-w-0">
+                        <span className="block text-sm font-bold text-gray-700">{label} 쉬는 시간</span>
+                        <span className="block text-[11px] text-gray-400 truncate">{hint}</span>
+                      </span>
+                      <span className="flex items-center gap-1 shrink-0">
+                        <button type="button" disabled={saving || value <= REST_MIN_SEC} onClick={() => setValue(value - 10)} className="w-9 h-9 rounded-lg bg-gray-100 font-bold text-gray-700 disabled:opacity-40">−10</button>
+                        <span className="w-12 text-center font-extrabold text-gray-800">{value}초</span>
+                        <button type="button" disabled={saving || value >= REST_MAX_SEC} onClick={() => setValue(value + 10)} className="w-9 h-9 rounded-lg bg-gray-100 font-bold text-gray-700 disabled:opacity-40">+10</button>
+                      </span>
+                    </div>
+                  );
+                })}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="min-w-0">
+                    <span className="block text-sm font-bold text-gray-700">카운트다운 소리</span>
+                    <span className="block text-[11px] text-gray-400">끝나기 3·2·1초 전 "삑", 끝나면 권투 종 "땡땡땡". 블루투스 이어폰으로도 나와요.</span>
+                    <button type="button" onClick={previewRestSounds} data-sound-preview
+                      className="mt-1.5 text-xs font-bold text-green-700 bg-green-50 px-2.5 py-1.5 rounded-lg">▶ 미리 듣기 · {BELL_SOUND_LABEL}</button>
+                  </span>
+                  <button type="button" disabled={saving} data-sound-setting
+                    onClick={() => { unlockWorkoutAudio(); const rest = { ...(current.rest || {}) }; if (restSoundOn(current)) rest.sound = false; else delete rest.sound; save({ ...current, rest }); }}
+                    className={`shrink-0 px-3 py-2 rounded-xl text-sm font-bold ${restSoundOn(current) ? 'bg-green-600 text-white' : 'bg-gray-100 text-gray-500'}`}>{restSoundOn(current) ? '🔔 켜짐' : '🔕 꺼짐'}</button>
+                </div>
+                <div className="flex items-center justify-between gap-2 text-[11px] text-gray-400">
+                  <span>종목마다 다르게 하려면 운동 중 종목 카드의 "쉬는 시간"을 누르세요.{Object.keys(current.restByKey || {}).length ? ` (직접 정한 종목 ${Object.keys(current.restByKey).length}개)` : ''}</span>
+                  {(current.rest?.big || current.rest?.small) && (
+                    <button type="button" disabled={saving} onClick={() => { const rest = { ...(current.rest || {}) }; delete rest.big; delete rest.small; save({ ...current, rest }); }}
+                      className="shrink-0 font-bold text-gray-500 underline">기본값으로</button>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+          {(setupDone || current.company.length > 0 || current.apartment.length > 0) && (
+            <button type="button" onClick={startSetup} className="w-full text-sm font-bold text-gray-500 py-2">처음 설정 다시 하기</button>
+          )}
+        </div>
+      );
+    }
+
     // 루틴 탭
     function RoutineTab({ routines, today, getCheck, isAutoDone, actions, onSave, onArchiveToggle, onDelete, onMove, loading }) {
       const [formFor, setFormFor] = useState(null); // null | 'new' | routine
@@ -1869,6 +4034,50 @@
       const [customCategory, setCustomCategory] = useState("");
       const [isCompressing, setIsCompressing] = useState(false);
       const [lightboxImage, setLightboxImage] = useState(null); // ★ 타임라인 사진을 탭해서 원본 크기로 볼 때 사용
+      const [exerciseLib, setExerciseLib] = useState(null); // ★ v0.5.1 종목 사전 { library, index }
+      const [exerciseInfo, setExerciseInfo] = useState(null); // ★ v0.5.1 설명 창에 띄운 종목
+      // ★ v0.5.4 진행 중인 운동. 폰에 저장해 새로고침·앱 종료 뒤에도 이어간다(사람마다 따로).
+      const [workoutSession, setWorkoutSession] = useState(null);
+      const workoutStoreKey = session?.user?.id ? 'workoutSession:' + session.user.id : null;
+      const workoutLoadedRef = useRef(null);
+      useEffect(() => {
+        if (!workoutStoreKey || workoutLoadedRef.current === workoutStoreKey) return;
+        workoutLoadedRef.current = workoutStoreKey;
+        try { const saved = JSON.parse(localStorage.getItem(workoutStoreKey) || 'null'); setWorkoutSession(saved && saved.version === 1 ? saved : null); } catch { setWorkoutSession(null); }
+      }, [workoutStoreKey]);
+      useEffect(() => {
+        if (!workoutStoreKey || workoutLoadedRef.current !== workoutStoreKey) return;
+        try { if (workoutSession) localStorage.setItem(workoutStoreKey, JSON.stringify(workoutSession)); else localStorage.removeItem(workoutStoreKey); } catch { /* 저장 공간이 없어도 화면은 동작 */ }
+      }, [workoutSession, workoutStoreKey]);
+      // 쉬는 시간 카운트다운 소리 예약: 시작·±10초 때 다시 예약, 건너뛰기·끝내기·소리 끄기 때 취소.
+      const workoutSoundOn = restSoundOn(profile?.workoutPlaces);
+      const restEndsAt = workoutSession?.rest?.endsAt || null;
+      useEffect(() => {
+        if (!restEndsAt || !workoutSoundOn) { cancelRestSounds(); return; }
+        scheduleRestSounds(restEndsAt);
+      }, [restEndsAt, workoutSoundOn]);
+      // 쉬는 시간이 끝나면 한 번 알린다(어느 탭에 있든).
+      useEffect(() => {
+        const rest = workoutSession?.rest;
+        if (!rest || rest.notified) return;
+        const markNotified = () => setWorkoutSession(s => s && s.rest ? { ...s, rest: { ...s.rest, notified: true } } : s);
+        const wait = rest.endsAt - Date.now();
+        if (wait <= 0) { if (wait > -5000) notifyRestDone(rest.endsAt, workoutSoundOn); markNotified(); return; }
+        const id = setTimeout(() => { notifyRestDone(rest.endsAt, workoutSoundOn); markNotified(); }, wait);
+        return () => clearTimeout(id);
+      }, [workoutSession?.rest?.endsAt, workoutSession?.rest?.notified, workoutSoundOn]);
+      // 운동하는 동안 화면이 꺼지지 않게(지원하는 기기만). 다른 앱에 갔다 오면 다시 요청한다.
+      const workoutRunning = workoutSession?.stage === 'run' && !workoutSession?.editLogId;
+      useEffect(() => {
+        if (!workoutRunning || !('wakeLock' in navigator)) return;
+        let lock = null; let alive = true;
+        const request = async () => { try { if (document.visibilityState === 'visible') { lock = await navigator.wakeLock.request('screen'); if (!alive) lock.release(); } } catch { /* 지원 안 함 */ } };
+        const onVisible = () => { if (document.visibilityState === 'visible') request(); };
+        request();
+        document.addEventListener('visibilitychange', onVisible);
+        return () => { alive = false; document.removeEventListener('visibilitychange', onVisible); try { lock && lock.release(); } catch { /* 이미 풀림 */ } };
+      }, [workoutRunning]);
+      useEffect(() => { loadExerciseLibrary().then(setExerciseLib); }, []);
       // ★ 저장 직후 사용자가 스크롤하지 않고 방금 받은 AI 피드백을 확인하는 팝업
       const [feedbackPopupLog, setFeedbackPopupLog] = useState(null);
 
@@ -1890,7 +4099,7 @@
       };
       const handleContentTouchEnd = (e) => {
         if (!touchStartRef.current) return;
-        if ((activeTab === 'analysis' && analysisView === 'longterm') || activeTab === 'routine') { touchStartRef.current = null; return; }
+        if ((activeTab === 'analysis' && analysisView === 'longterm') || activeTab === 'routine' || activeTab === 'workout') { touchStartRef.current = null; return; }
         const t = e.changedTouches[0];
         const dx = t.clientX - touchStartRef.current.x;
         const dy = t.clientY - touchStartRef.current.y;
@@ -1914,14 +4123,15 @@
         try { localStorage.setItem('analysisView', analysisView); } catch { /* 저장 안 돼도 동작에는 문제 없음 */ }
       }, [analysisView]);
       const isLongTermView = activeTab === 'analysis' && analysisView === 'longterm';
-      // 장기 분석과 루틴 탭에는 날짜·주간/월간 선택이 없다.
-      const hidesDateNav = isLongTermView || activeTab === 'routine';
+      // 장기 분석·루틴·운동 탭에는 날짜·주간/월간 선택이 없다.
+      const hidesDateNav = isLongTermView || activeTab === 'routine' || activeTab === 'workout';
       // ★ 루틴 기능 사용(계정 설정, 기본 켜짐). 끄면 홈 루틴 칸과 루틴 탭이 사라진다.
       const showRoutines = profile?.showRoutines !== false;
       const [showRoutineHelp, setShowRoutineHelp] = useState(false);
       const PAGE_TITLES = {
         home: { icon: '📋', label: '하루 기록', circle: 'bg-blue-100' },
         routine: { icon: '🌱', label: '루틴', circle: 'bg-emerald-100' },
+        workout: { icon: '🏋️', label: '운동', circle: 'bg-green-100' },
         status: { icon: '📊', label: '건강 현황', circle: 'bg-sky-100' },
         analysis: { icon: '🧭', label: '건강분석', circle: 'bg-indigo-100' },
       };
@@ -1941,6 +4151,8 @@
       const [exerciseBalance, setExerciseBalance] = useState(null);
       const [unclassifiedExerciseCount, setUnclassifiedExerciseCount] = useState(0);
       const [isClassifyingExercises, setIsClassifyingExercises] = useState(false);
+      const [unreadExerciseDetailCount, setUnreadExerciseDetailCount] = useState(0); // ★ v0.5.0 세트 숫자를 아직 읽지 않은 예전 운동 기록
+      const [isReadingExerciseDetails, setIsReadingExerciseDetails] = useState(false);
 
       // ★ 설정에 적은 기저질환마다 최근 60일 생활습관 분석 이력을 별도로 보관
       const [conditionReports, setConditionReports] = useState([]);
@@ -2040,7 +4252,8 @@
               goalWeightKg: data.goal_weight_kg, goalBpSysMax: data.goal_bp_sys_max, goalBpDiaMax: data.goal_bp_dia_max,
               goalSugarMax: data.goal_sugar_max,
               showRoutines: data.show_routines !== false,
-              intakePharmacistAck: !!data.intake_pharmacist_ack
+              intakePharmacistAck: !!data.intake_pharmacist_ack,
+              workoutPlaces: sanitizeWorkoutPlaces(data.workout_places)
             });
           }
         });
@@ -2113,7 +4326,7 @@
         if (!session) return;
         if (activeTab === 'home') {
           fetchLogs(currentDate);
-        } else if (activeTab !== 'routine') {
+        } else if (activeTab !== 'routine' && activeTab !== 'workout') {
           const range = statsMode === 'week' ? getWeekRange(currentDate) : getMonthRange(currentDate);
           setActiveRange(range);
           fetchPeriodLogs(range.start, range.end);
@@ -2139,7 +4352,28 @@
         const { count } = await sb.from('logs').select('id', { count: 'exact', head: true })
           .eq('category', '운동').is('exercise_meta', null);
         setUnclassifiedExerciseCount(count || 0);
+        const unread = await sb.from('logs').select('id', { count: 'exact', head: true })
+          .eq('category', '운동').not('exercise_meta', 'is', null).is('exercise_meta->>detailVersion', null);
+        setUnreadExerciseDetailCount(unread.error ? 0 : (unread.count || 0));
         setExerciseBalance(computeExerciseBalance(rows, referenceDate));
+      };
+
+      // ★ v0.5.0 예전 운동 기록의 세트·유산소 숫자 읽기: 서버가 사진 있는 기록을 2건씩 읽으므로 남은 기록이 없을 때까지 반복한다.
+      const handleReadExerciseDetails = async () => {
+        if (isReadingExerciseDetails) return;
+        setIsReadingExerciseDetails(true);
+        try {
+          for (let round = 0; round < 60; round++) {
+            const res = await callAI('readExerciseDetails', {});
+            setUnreadExerciseDetailCount(res.remaining || 0);
+            if (!res.remaining || !res.processed) break;
+          }
+          await fetchExerciseBalance(activeRange.end);
+        } catch (err) {
+          handleAiFailure(err, handleReadExerciseDetails);
+        } finally {
+          setIsReadingExerciseDetails(false);
+        }
       };
 
       // ★ 예전 운동 기록 분류: 서버가 40건씩 처리하므로 남은 기록이 없을 때까지 반복한다.
@@ -2452,24 +4686,45 @@
         && intakeItems.some(i => i.kind === 'medicine' && isIntakeDue(i, currentDate))
         && intakeItems.some(i => i.kind === 'supplement' && isIntakeDue(i, currentDate));
 
-      // time: 복용 창 위 "먹은 시각" 칸 값. 비었거나 덜 입력됐으면 오늘은 지금 시각, 지난 날짜는 시간대 기본 시각.
-      const toggleIntakeCheck = async (item, slot, time) => {
-        const key = intakeCheckKey(item.id, currentDate, slot);
-        const prev = intakeChecks[key] || null;
-        if (prev) {
-          setIntakeChecks(p => { const n = { ...p }; delete n[key]; return n; });
-          const { error } = await sb.from('intake_checks').delete().eq('item_id', item.id).eq('check_date', currentDate).eq('slot', slot);
-          if (error) { setIntakeChecks(p => ({ ...p, [key]: prev })); showNotice(INTAKE_SAVE_FAILED); }
-          return;
-        }
+      // ★ v0.4.8 체크: 늘 지금 시각(지난 날짜는 시간대 기본 시각). 여러 줄을 한꺼번에 저장하고, 쓴 시각을 돌려준다.
+      const checkIntakeRows = async (targets) => {
         const isToday = currentDate === formatDate(new Date());
-        const row = { user_id: session.user.id, item_id: item.id, check_date: currentDate, slot,
-          taken_time: /^\d{2}:\d{2}$/.test(time || '') ? time
-            : (isToday ? getCurrentTimeStr() : (INTAKE_SLOTS.find(x => x.key === slot)?.time || '08:00')) };
-        setIntakeChecks(p => ({ ...p, [key]: row }));
-        const { data, error } = await sb.from('intake_checks').upsert(row, { onConflict: 'item_id,check_date,slot' }).select().single();
-        if (error) { setIntakeChecks(p => { const n = { ...p }; delete n[key]; return n; }); showNotice(INTAKE_SAVE_FAILED); return; }
-        setIntakeChecks(p => ({ ...p, [key]: data }));
+        const fresh = targets.filter(({ item, slot }) => !intakeChecks[intakeCheckKey(item.id, currentDate, slot)]);
+        if (!fresh.length) return null;
+        const slotTime = (slot) => INTAKE_SLOTS.find(x => x.key === slot)?.time || '08:00';
+        const time = isToday ? getCurrentTimeStr() : slotTime(fresh[0].slot);
+        const rowsToSave = fresh.map(({ item, slot }) => ({ user_id: session.user.id, item_id: item.id, check_date: currentDate, slot, taken_time: isToday ? time : slotTime(slot) }));
+        const keys = rowsToSave.map(r => intakeCheckKey(r.item_id, r.check_date, r.slot));
+        setIntakeChecks(p => ({ ...p, ...Object.fromEntries(rowsToSave.map((r, i) => [keys[i], r])) }));
+        const { data, error } = await sb.from('intake_checks').upsert(rowsToSave, { onConflict: 'item_id,check_date,slot' }).select();
+        if (error) {
+          setIntakeChecks(p => { const n = { ...p }; keys.forEach(k => delete n[k]); return n; });
+          showNotice(INTAKE_SAVE_FAILED);
+          return null;
+        }
+        setIntakeChecks(p => ({ ...p, ...Object.fromEntries((data || []).map(c => [intakeCheckKey(c.item_id, c.check_date, c.slot), c])) }));
+        return time;
+      };
+      const uncheckIntake = async (item, slot) => {
+        const key = intakeCheckKey(item.id, currentDate, slot);
+        const prev = intakeChecks[key];
+        if (!prev) return;
+        setIntakeChecks(p => { const n = { ...p }; delete n[key]; return n; });
+        const { error } = await sb.from('intake_checks').delete().eq('item_id', item.id).eq('check_date', currentDate).eq('slot', slot);
+        if (error) { setIntakeChecks(p => ({ ...p, [key]: prev })); showNotice(INTAKE_SAVE_FAILED); }
+      };
+
+      // ★ v0.4.7 체크한 줄의 먹은 시각 바꾸기(복용 창 시각 칸을 바꾸거나, 줄의 시각을 눌러 확인했을 때).
+      const retimeIntakeChecks = async (targets, time) => {
+        if (!/^\d{2}:\d{2}$/.test(time || '')) return;
+        const changed = targets.map(({ item, slot }) => ({ item, slot, key: intakeCheckKey(item.id, currentDate, slot) }))
+          .filter(t => intakeChecks[t.key] && String(intakeChecks[t.key].taken_time || '').slice(0, 5) !== time);
+        if (!changed.length) return;
+        const prev = Object.fromEntries(changed.map(t => [t.key, intakeChecks[t.key]]));
+        setIntakeChecks(p => ({ ...p, ...Object.fromEntries(changed.map(t => [t.key, { ...p[t.key], taken_time: time }])) }));
+        const results = await Promise.all(changed.map(t => sb.from('intake_checks').update({ taken_time: time })
+          .eq('item_id', t.item.id).eq('check_date', currentDate).eq('slot', t.slot)));
+        if (results.some(r => r.error)) { setIntakeChecks(p => ({ ...p, ...prev })); showNotice(INTAKE_SAVE_FAILED); }
       };
 
       // 등록·수정. 건강식품은 AI 참고가 없을 때(또는 새 포장 사진이 있을 때) 한 번만 서버에서 만든다. 약은 AI를 쓰지 않는다.
@@ -2729,6 +4984,62 @@
         setTimeout(() => setSysNotice(""), 2500);
       };
 
+      // ★ v0.5.2 장소 설정 저장(profiles.workout_places). 실패하면 화면을 되돌린다.
+      const saveWorkoutPlaces = async (next) => {
+        const value = sanitizeWorkoutPlaces({ ...next, updatedAt: new Date().toISOString() });
+        const prev = profile?.workoutPlaces || null;
+        setProfile(p => ({ ...p, workoutPlaces: value }));
+        const { error } = await withAuthRetry(() => sb.from('profiles').update({ workout_places: value }).eq('id', session.user.id));
+        if (error) {
+          setProfile(p => ({ ...p, workoutPlaces: prev }));
+          showNotice('장소 설정을 저장하지 못했어요. 잠시 후 다시 시도해 주세요.');
+          return false;
+        }
+        return true;
+      };
+      // 처음 설정에 쓸 내 운동 기록(최근 500건)
+      const loadWorkoutRecords = async () => {
+        const { data, error } = await withAuthRetry(() => sb.from('logs').select('log_date, log_time, ingredients, exercise_meta')
+          .eq('user_id', session.user.id).eq('category', '운동').order('log_date', { ascending: false }).limit(500));
+        if (error) throw error;
+        return data || [];
+      };
+
+      // ★ v0.5.4 탭에서 한 운동을 logs에 바로 저장(AI 없음). 고치기면 그 줄을 바꾼다.
+      const saveWorkoutSessionLog = async (ws) => {
+        const endMs = ws.editLogId && ws.editEndedAt ? Date.parse(ws.editEndedAt) : Date.now();
+        const row = buildWorkoutLog(ws, endMs);
+        if (!row.ingredients.length) return false;
+        const { error } = ws.editLogId
+          ? await withAuthRetry(() => sb.from('logs').update(row).eq('id', ws.editLogId).eq('user_id', session.user.id))
+          : await withAuthRetry(() => sb.from('logs').insert({ ...row, user_id: session.user.id }));
+        if (error) { showNotice('운동 기록을 저장하지 못했어요. 잠시 후 다시 눌러 주세요. 진행 내용은 그대로 있어요.'); return false; }
+        setWorkoutSession(null);
+        showNotice(ws.editLogId ? '운동 기록을 고쳤어요.' : '운동 기록을 저장했어요.');
+        if (currentDate === row.log_date && activeTab === 'home') fetchLogs(row.log_date);
+        setCurrentDate(row.log_date);
+        setActiveTab('home');
+        fetchGoalStats();
+        fetchRoutineData();
+        window.scrollTo(0, 0);
+        return true;
+      };
+      // ★ v0.5.5 어제 음주(🍺)·야식 기록이 있었는지(오늘 추천에 반영)
+      const loadYesterdayFlags = async () => {
+        const d = new Date(Date.now() - 86400000);
+        const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const { data, error } = await withAuthRetry(() => sb.from('logs').select('category, is_alcohol').eq('user_id', session.user.id).eq('log_date', day));
+        if (error) return {};
+        return { alcohol: (data || []).some(r => r.is_alcohol), lateNight: (data || []).some(r => r.category === '야식') };
+      };
+      // 같은 날 운동 기록 수(캡처로도 올렸을 때 중복 안내)
+      const countWorkoutLogsOn = async (date, excludeId) => {
+        let q = sb.from('logs').select('id', { count: 'exact', head: true }).eq('user_id', session.user.id).eq('category', '운동').eq('log_date', date);
+        if (excludeId) q = q.neq('id', excludeId);
+        const { count, error } = await q;
+        return error ? 0 : (count || 0);
+      };
+
       // ★ 서버/네트워크에서 실제로 발생한 에러 처리 전용 — 새로고침하면 대부분 해결되는 경험적 사실에 따라
       // 안내 문구를 띄운 뒤 자동으로 새로고침한다. (단순 입력 안내는 새로고침이 필요 없으니 그대로 setSysError를 쓴다)
       // 새로고침으로도 안 고쳐지는 문제라면 계속 새로고침을 반복하지 않도록, 최근 30초 안에 이미
@@ -2825,7 +5136,8 @@
               goalWeightKg: freshProfile.goal_weight_kg, goalBpSysMax: freshProfile.goal_bp_sys_max, goalBpDiaMax: freshProfile.goal_bp_dia_max,
               goalSugarMax: freshProfile.goal_sugar_max,
               showRoutines: freshProfile.show_routines !== false,
-              intakePharmacistAck: !!freshProfile.intake_pharmacist_ack
+              intakePharmacistAck: !!freshProfile.intake_pharmacist_ack,
+              workoutPlaces: sanitizeWorkoutPlaces(freshProfile.workout_places)
             });
           }
           setIsSettingsOpen(false);
@@ -3119,6 +5431,13 @@
       };
 
       const handleEditClick = (log) => {
+        // ★ v0.5.4 운동 탭에서 저장한 기록은 AI 재분석 대신 운동 탭의 세트 고치기로 연다.
+        if (log.category === '운동' && isCoachLog(log)) {
+          if (workoutSession && workoutSession.editLogId !== log.id) { showNotice('진행 중인 운동을 먼저 저장하거나 취소해 주세요.'); setActiveTab('workout'); return; }
+          if (!workoutSession) setWorkoutSession(sessionFromLog(log, libraryKeyMap(exerciseLib?.index)));
+          setActiveTab('workout'); window.scrollTo(0, 0);
+          return;
+        }
         let parsedRaw = { type: 'text', naturalText: log.foodName, memo: '', biometrics: null };
         try {
           if (log.rawInput && log.rawInput.startsWith('{')) parsedRaw = JSON.parse(log.rawInput);
@@ -3350,8 +5669,9 @@
           .map(c => ({ c, item: intakeItems.find(i => i.id === c.item_id) }))
           .filter(x => x.item?.kind === 'supplement')
           .sort((a, b) => (a.c.check_date + String(a.c.taken_time)).localeCompare(b.c.check_date + String(b.c.taken_time)));
-        const supplementNote = periodSupplementChecks.length || periodLogs.some(isSupplementLog)
-          ? '\n* 건강식품은 식사가 아니므로 식사·간식으로 세지 말고, 효능을 평가하거나 평가의 근거로 삼지 마세요.' : '';
+        // ★ v0.4.7 약은 이름 없이 이 기간 복용 체크 수만(규칙은 서버 v0.0.20이 붙인다).
+        const periodMed = intakeRangeCounts(intakeItems, intakeChecks, activeRange.start, activeRange.end, formatDate(new Date()), 'medicine');
+        const supplementNote = periodMed.due ? `\n[등록한 약 복용] 이 기간 복용 체크 ${periodMed.done}/${periodMed.due}회 (${periodMed.rate}%)` : '';
         if (statsMode === 'month') {
            const avgBio = averageBiometrics(periodLogs.filter(l => l.category === '생체기록'));
            const checkCounts = {};
@@ -3432,6 +5752,13 @@
           const item = intakeItems.find(i => i.id === c.item_id);
           if (item?.kind === 'supplement') summaryLines.push(`[${String(c.taken_time || '').slice(0, 5)}] [건강식품] ${item.name}${item.dose ? ' ' + item.dose : ''} (등록한 건강식품 복용 체크)`);
         });
+        // ★ v0.4.7 약은 이름 없이 그날 먹을 횟수 중 몇 번 체크했는지만 보낸다(격려용).
+        const medRows = intakeDueRows(intakeItems.filter(i => i.kind === 'medicine'), currentDate);
+        if (medRows.length) {
+          const medDone = medRows.filter(({ item, slot }) => intakeChecks[intakeCheckKey(item.id, currentDate, slot)]).length;
+          const stillOpen = currentDate === formatDate(new Date()) && medDone < medRows.length;
+          summaryLines.push(`[등록한 약 복용] 이날 먹을 ${medRows.length}회 중 ${medDone}회 체크${stillOpen ? ' (오늘이라 아직 남은 시간대가 있을 수 있음)' : ''}`);
+        }
         const summaryData = `기록 내역 (시간순):\n` + summaryLines.join('\n');
 
         (async () => {
@@ -4150,6 +6477,7 @@
           )}
 
           <div className="bg-white px-5 py-5 shadow-sm sticky top-0 z-20">
+            {workoutSession && activeTab !== 'workout' && <WorkoutBanner session={workoutSession} onOpen={() => { setActiveTab('workout'); window.scrollTo(0, 0); }} />}
             <div className="flex justify-between items-center gap-3 mb-5">
               <h1 className="flex items-center gap-2.5 min-w-0 text-[22px] font-extrabold tracking-tight text-gray-900 whitespace-nowrap" data-page-title>
                 <span className={`w-9 h-9 rounded-full flex items-center justify-center text-lg shrink-0 ${pageTitle.circle}`}>{pageTitle.icon}</span>
@@ -4429,6 +6757,22 @@
                           {log.ingredients && log.ingredients.length > 0 ? (Array.isArray(log.ingredients) ? log.ingredients.join(' | ') : log.ingredients) : ''}
                         </p>
 
+                        {isEx && exerciseCardLines(log.exerciseMeta, exerciseLib?.index).length > 0 && (
+                          <div className="mb-2 space-y-1 bg-green-50 rounded-xl px-3 py-2" data-exercise-details>
+                            {exerciseCardLines(log.exerciseMeta, exerciseLib?.index).map((line, i) => (
+                              <p key={i} className="text-xs leading-relaxed">
+                                {line.info ? (
+                                  <button type="button" onClick={() => setExerciseInfo(line.info)} data-exercise-name
+                                    className="font-bold text-green-800 underline decoration-dotted underline-offset-2 text-left">{line.name} ⓘ</button>
+                                ) : (
+                                  <span className="font-bold text-gray-700">{line.name}</span>
+                                )}{' '}
+                                <span className="text-gray-600">{line.text}</span>
+                              </p>
+                            ))}
+                          </div>
+                        )}
+
                         {log.healthTags?.length > 0 && (
                           <div className="flex flex-wrap gap-1.5 mb-3" data-health-tags>
                             {log.healthTags.slice(0, 2).map((tag, index) => (
@@ -4510,7 +6854,13 @@
                 actions={routineActions} onSave={saveRoutine} onArchiveToggle={toggleRoutineArchive} onDelete={deleteRoutine} onMove={moveRoutine} loading={routinesLoading} />
             )}
 
-            {activeTab !== 'home' && activeTab !== 'routine' && (
+            {activeTab === 'workout' && (
+              <WorkoutTab exerciseLib={exerciseLib} places={profile?.workoutPlaces} onSave={saveWorkoutPlaces}
+                loadRecords={loadWorkoutRecords} onShowInfo={setExerciseInfo}
+                session={workoutSession} setSession={setWorkoutSession} onSaveLog={saveWorkoutSessionLog} checkDuplicate={countWorkoutLogsOn} loadYesterday={loadYesterdayFlags} />
+            )}
+
+            {activeTab !== 'home' && activeTab !== 'routine' && activeTab !== 'workout' && (
               <div className="space-y-6 animate-fade-in">
                 {activeTab === 'analysis' && analysisView === 'period' && (
                 <HealthTagSummary items={periodLogs} title={`${statsMode === 'month' ? '월간' : '주간'} 건강 영향`} />
@@ -4779,6 +7129,17 @@
                         <p className="min-w-0 text-[11px] text-gray-600 leading-relaxed">부위 정리 전 예전 운동 기록 {unclassifiedExerciseCount}건</p>
                         <button type="button" onClick={handleClassifyExercises} disabled={isClassifyingExercises} className="shrink-0 text-xs font-bold text-indigo-600 bg-white border border-indigo-100 px-3 py-2 rounded-xl disabled:opacity-50">
                           {isClassifyingExercises ? '정리 중...' : '정리하기'}
+                        </button>
+                      </div>
+                    )}
+                    {unclassifiedExerciseCount === 0 && unreadExerciseDetailCount > 0 && (
+                      <div className="mt-4 flex items-center justify-between gap-3 bg-gray-50 rounded-2xl px-4 py-3" data-exercise-detail-backfill>
+                        <p className="min-w-0 text-[11px] text-gray-600 leading-relaxed">
+                          무게·횟수를 아직 읽지 않은 예전 운동 기록 {unreadExerciseDetailCount}건
+                          <span className="block text-gray-400">캡처 사진에서 한 번만 읽어요(AI 사용)</span>
+                        </p>
+                        <button type="button" onClick={handleReadExerciseDetails} disabled={isReadingExerciseDetails} className="shrink-0 text-xs font-bold text-indigo-600 bg-white border border-indigo-100 px-3 py-2 rounded-xl disabled:opacity-50">
+                          {isReadingExerciseDetails ? '읽는 중...' : '읽기'}
                         </button>
                       </div>
                     )}
@@ -5313,6 +7674,8 @@
             </div>
           )}
 
+          {exerciseInfo && <ExerciseInfoSheet entry={exerciseInfo} library={exerciseLib?.library} onClose={() => setExerciseInfo(null)} />}
+
           {/* ★ 타임라인/업로드 미리보기 사진을 탭했을 때 원본 크기로 보여주는 라이트박스 */}
           {lightboxImage && (
             <div
@@ -5336,7 +7699,7 @@
 
           {isIntakeSheetOpen && (
             <IntakeSheet items={intakeItems} checks={intakeChecks} date={currentDate} isToday={currentDate === formatDate(new Date())}
-              dayLogs={logs} adherence={intakeAdherenceNow} showAck={showIntakeAck} onAck={ackIntakePharmacist} onToggle={toggleIntakeCheck}
+              dayLogs={logs} adherence={intakeAdherenceNow} showAck={showIntakeAck} onAck={ackIntakePharmacist} onCheck={checkIntakeRows} onUncheck={uncheckIntake} onRetime={retimeIntakeChecks}
               onOpenManager={() => { setIsIntakeSheetOpen(false); setIntakeManager({ draft: null }); }}
               onRecordOther={() => { setIsIntakeSheetOpen(false); openQuickDraft(SUPPLEMENT_CATEGORY); }}
               onClose={() => setIsIntakeSheetOpen(false)} />
@@ -5429,7 +7792,7 @@
           )}
 
           <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-3 py-2 pb-safe shadow-[0_-10px_40px_rgba(0,0,0,0.05)] z-40" data-bottom-nav>
-            <div className={`max-w-lg mx-auto grid ${showRoutines ? 'grid-cols-4' : 'grid-cols-3'} items-center`}>
+            <div className={`max-w-lg mx-auto grid ${showRoutines ? 'grid-cols-5' : 'grid-cols-4'} items-center`}>
               <button aria-label="홈 화면" onClick={() => { if(activeTab === 'home') setCurrentDate(formatDate(new Date())); else setActiveTab('home'); }} className={`flex flex-col items-center py-2 min-w-0 transition ${activeTab === 'home' ? 'text-blue-600' : 'text-gray-400 hover:text-gray-600'}`}>
                 <span className="text-xl mb-0.5">🏠</span>
                 <span className="text-[11px] font-bold whitespace-nowrap">홈</span>
@@ -5440,6 +7803,10 @@
                 <span className="text-[11px] font-bold whitespace-nowrap">루틴</span>
               </button>
               )}
+              <button aria-label="운동 화면" onClick={() => setActiveTab('workout')} className={`flex flex-col items-center py-2 min-w-0 transition ${activeTab === 'workout' ? 'text-green-600' : 'text-gray-400 hover:text-gray-600'}`} data-workout-nav>
+                <span className="text-xl mb-0.5">🏋️</span>
+                <span className="text-[11px] font-bold whitespace-nowrap">운동</span>
+              </button>
               <button aria-label="건강 현황 화면" onClick={() => setActiveTab('status')} className={`flex flex-col items-center py-2 min-w-0 transition ${activeTab === 'status' ? 'text-blue-600' : 'text-gray-400 hover:text-gray-600'}`}>
                 <span className="text-xl mb-0.5">📊</span>
                 <span className="text-[11px] font-bold whitespace-nowrap">현황</span>
