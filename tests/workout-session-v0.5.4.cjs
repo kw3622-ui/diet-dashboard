@@ -22,7 +22,7 @@ const ctx = {};
 vm.createContext(ctx);
 new vm.Script(html.slice(partsStart, partsEnd) + html.slice(start, end) + `
 ;Object.assign(globalThis, { buildExerciseIndex, exerciseInputKind, restSecondsFor, exerciseSetHistory, pickLastSets, makeSessionItem,
-  recentWorkoutSessions, formatSessionSet, setHasValue, buildWorkoutLog, sessionFromLog, isCoachLog, libraryKeyMap, exerciseDetailLines });`).runInContext(ctx);
+  recentWorkoutSessions, formatSessionSet, setHasValue, buildWorkoutLog, sessionFromLog, isCoachLog, libraryKeyMap, exerciseDetailLines, sanitizeWorkoutPlaces, restSoundOn });`).runInContext(ctx);
 const index = ctx.buildExerciseIndex(lib);
 const byKey = ctx.libraryKeyMap(index);
 const E = (k) => byKey.get(k);
@@ -38,6 +38,19 @@ for (const k of ['barbell-squat', 'deadlift', 'barbell-bench-press', 'barbell-ro
 for (const k of ['dumbbell-lateral-raise', 'ez-bar-curl', 'cable-rope-triceps', 'leg-extension', 'cable-upright-row', 'smith-calf-raise', 'face-pull', 'crunch', 'dumbbell-fly'])
   assert.equal(ctx.restSecondsFor(E(k)), 60, k);
 pass('input kinds and rest seconds (80 big / 60 others)');
+
+// 쉬는 시간 설정: 종목별 값 → 기본값 설정 → 80/60, 소리 켜기 기본
+const placesSet = plain(ctx.sanitizeWorkoutPlaces({ company: [], rest: { big: 95, small: 5, sound: false, x: 1 }, restByKey: { deadlift: 120, 'leg-extension': 999, curl: '45' } }));
+assert.deepEqual(placesSet.rest, { big: 95, sound: false });
+assert.deepEqual(placesSet.restByKey, { deadlift: 120, curl: 45 });
+assert.ok(!('rest' in plain(ctx.sanitizeWorkoutPlaces({ rest: { sound: true } }))), 'default settings are not stored');
+assert.equal(ctx.restSecondsFor(E('deadlift'), placesSet), 120, 'own value first');
+assert.equal(ctx.restSecondsFor(E('barbell-squat'), placesSet), 95, 'big default from settings');
+assert.equal(ctx.restSecondsFor(E('leg-extension'), placesSet), 60, 'small default when not set');
+assert.equal(ctx.restSoundOn(placesSet), false);
+assert.equal(ctx.restSoundOn(null), true);
+assert.equal(ctx.makeSessionItem(E('deadlift'), null, placesSet).restSec, 120);
+pass('rest settings: per exercise, defaults, sound, limits 30~300s');
 
 // 2. 지난 기록 불러오기
 const logs = [
@@ -135,6 +148,14 @@ const checks = [
   ['records include time', /select\('log_date, log_time, ingredients, exercise_meta'\)/],
   ['setup starts from existing lists', /const hasLists = setupDone \|\| current\.company\.length > 0 \|\| current\.apartment\.length > 0;/],
 ];
+checks.push(
+  ['countdown 3-2-1 and end tone', /\{ before: 3, freq: 880[\s\S]*\{ before: 2, freq: 880[\s\S]*\{ before: 1, freq: 880[\s\S]*\{ before: 0, freq: 1320/],
+  ['bluetooth wake tone is almost silent', /\{ before: 3\.6, freq: 440, dur: 0\.4, gain: 0\.002 \}/],
+  ['sounds rescheduled or cancelled with rest', /if \(!restEndsAt \|\| !workoutSoundOn\) \{ cancelRestSounds\(\); return; \}\n\s*scheduleRestSounds\(restEndsAt\);/],
+  ['sound toggle on run screen', /data-sound-toggle/],
+  ['settings section', /data-workout-settings/],
+  ['per exercise rest picker remembered', /if \(sec == null\) delete restByKey\[item\.key\]; else restByKey\[item\.key\] = sec;/],
+);
 for (const [name, re] of checks) { assert.match(html, re, name); pass(name); }
 
 console.log(`\n${passed} passed`);
