@@ -2349,7 +2349,7 @@
       } catch { /* 소리를 못 내도 화면 표시는 그대로 */ }
     };
     // ★ 카운트다운: 끝나기 3·2·1초 전 짧은 "삑", 0초에 길고 높은 "삐–".
-    // 쉬는 시간이 시작될 때 소리를 미리 예약해 두어, 다른 탭·화면에 있어도 제때 울린다(+15초·건너뛰기 때는 다시 예약/취소).
+    // 쉬는 시간이 시작될 때 소리를 미리 예약해 두어, 다른 탭·화면에 있어도 제때 울린다(±10초·건너뛰기 때는 다시 예약/취소).
     // 블루투스 이어폰이 잠들어 첫소리가 잘리지 않도록, 첫 "삑" 0.6초 전에 거의 들리지 않는 소리로 깨운다.
     const REST_COUNTDOWN_PLAN = [
       { before: 3.6, freq: 440, dur: 0.4, gain: 0.002 }, // 깨우기(거의 안 들림)
@@ -2363,8 +2363,8 @@
     ];
     // 권투 종 한 번 치기: 음 높이가 어긋난 여러 소리를 겹쳐 쇠붙이처럼 울리고 천천히 사라지게 한다(소리 파일 없음).
     const BELL_PARTIALS = [[1, 0.5], [2.76, 0.32], [5.4, 0.2], [8.93, 0.12]];
-    const BELL_BASE_HZ = 620;
-    const BELL_DECAY_SEC = 1.1;
+    const BELL_BASE_HZ = 1100; // 2026-11-25 "더 고음" 요청으로 620 → 1100Hz
+    const BELL_DECAY_SEC = 0.9;
     const strikeBell = (ctx, startAt, nodes) => {
       BELL_PARTIALS.forEach(([ratio, level], i) => {
         const osc = ctx.createOscillator(); const gain = ctx.createGain();
@@ -2475,6 +2475,12 @@
         return { ...it, sets: it.sets.map((st, j) => j > setIdx && !st.done ? { ...st, weight: src.weight, reps: src.reps, seconds: src.seconds } : st) };
       });
       const startRest = (item) => update(s => ({ ...s, rest: { endsAt: Date.now() + item.restSec * 1000, total: item.restSec, notified: false } }));
+      // 쉬는 중 ±10초(이번 한 번만). 줄여서 남은 시간이 없으면 지금 끝난 것으로 한다.
+      const adjustRest = (deltaSec) => update(s => {
+        if (!s.rest) return s;
+        const endsAt = Math.max(Date.now(), s.rest.endsAt + deltaSec * 1000);
+        return { ...s, rest: { ...s.rest, endsAt, total: Math.max(10, s.rest.total + deltaSec), notified: false } };
+      });
       // 종목별 쉬는 시간: 장소 설정에 기억하고, 오늘 세션의 같은 종목에도 바로 반영한다. null이면 기본값으로.
       const setItemRest = (item, sec) => {
         const restByKey = { ...(places.restByKey || {}) };
@@ -2759,7 +2765,8 @@
                   <div className="h-full bg-green-500 transition-all" style={{ width: `${Math.min(100, (restLeft / (session.rest.total || 60)) * 100)}%` }}></div>
                 </div>
                 <span className="text-sm font-extrabold text-green-700 w-12 text-right">{formatClock(restLeft)}</span>
-                <button type="button" onClick={() => update(s => ({ ...s, rest: s.rest ? { ...s.rest, endsAt: s.rest.endsAt + 15000, total: s.rest.total + 15 } : s.rest }))} className="text-xs font-bold text-gray-600 bg-gray-100 px-2 py-1 rounded-lg">+15초</button>
+                <button type="button" onClick={() => adjustRest(-10)} data-rest-minus className="text-xs font-bold text-gray-600 bg-gray-100 px-2 py-1 rounded-lg">−10초</button>
+                <button type="button" onClick={() => adjustRest(10)} data-rest-plus className="text-xs font-bold text-gray-600 bg-gray-100 px-2 py-1 rounded-lg">+10초</button>
                 <button type="button" onClick={() => update(s => ({ ...s, rest: null }))} className="text-xs font-bold text-gray-600 bg-gray-100 px-2 py-1 rounded-lg">건너뛰기</button>
               </div>
             )}
@@ -3481,7 +3488,7 @@
         if (!workoutStoreKey || workoutLoadedRef.current !== workoutStoreKey) return;
         try { if (workoutSession) localStorage.setItem(workoutStoreKey, JSON.stringify(workoutSession)); else localStorage.removeItem(workoutStoreKey); } catch { /* 저장 공간이 없어도 화면은 동작 */ }
       }, [workoutSession, workoutStoreKey]);
-      // 쉬는 시간 카운트다운 소리 예약: 시작·+15초 때 다시 예약, 건너뛰기·끝내기·소리 끄기 때 취소.
+      // 쉬는 시간 카운트다운 소리 예약: 시작·±10초 때 다시 예약, 건너뛰기·끝내기·소리 끄기 때 취소.
       const workoutSoundOn = restSoundOn(profile?.workoutPlaces);
       const restEndsAt = workoutSession?.rest?.endsAt || null;
       useEffect(() => {
