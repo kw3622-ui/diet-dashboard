@@ -123,6 +123,8 @@ const checks = [
   ['minutes default 40, -10/+10 within 20~120', /const RECO_DEFAULT_MINUTES = 40;\n\s*const RECO_MINUTES_STEP = 10;\n\s*const RECO_MIN_MINUTES = 20;\n\s*const RECO_MAX_MINUTES = 120;/],
   ['minus and plus buttons around the minutes', /data-reco-minus[\s\S]{0,400}data-reco-minute-value[\s\S]{0,600}data-reco-plus/],
   ['condition buttons', /data-reco-cond=\{v\}/],
+  ['thumbnail still until tapped, two frames, lazy, icon fallback', /function ExerciseThumb\(\{ entry, library, size = 40 \}\)[\s\S]*if \(!playing\) return;[\s\S]*\(f \+ 1\) % 2[\s\S]*EQUIPMENT_ICONS\[entry\?\.equipment\][\s\S]*e\.stopPropagation\(\)[\s\S]*loading="lazy"/],
+  ['thumbnails in search, pick list, recommendation, place search', /data-session-search-result=\{e\.key\}>\n\s*<ExerciseThumb[\s\S]*data-reco-item=\{r\.key\}[^\n]*\n\s*<ExerciseThumb[\s\S]*<ExerciseThumb entry=\{entryFor\(key\)\}[\s\S]*data-search-result=\{e\.key\}>\n\s*<ExerciseThumb/],
   ['start from recommendation', /onClick=\{startFromReco\} data-reco-start/],
   ['reason shown while working out', /data-item-reason/],
   ['supplement can be turned off', /편식 보충 1종목 넣기/],

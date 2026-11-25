@@ -2672,6 +2672,33 @@
     };
     const formatClock = (sec) => { const s = Math.max(0, Math.round(sec)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 
+    // ★ v0.5.5 종목 작은 그림(40px): 평소엔 시작 자세 한 장, 그림을 누르면 시작·끝 자세를 0.8초마다 번갈아(다시 누르면 멈춤).
+    // 화면에 보일 때만 받는다(loading="lazy"). 그림이 없거나 못 받으면 장비 아이콘으로 대신한다.
+    const EQUIPMENT_ICONS = { barbell: '🏋️', smith: '🏋️', dumbbell: '💪', kettlebell: '🔔', machine: '⚙️', cable: '🔗', bodyweight: '🧍', pullup_bar: '🤸', parallel_bars: '🤸', band: '➰', ab_wheel: '🛞', cardio_machine: '🏃', none: '🏃' };
+    const THUMB_FRAME_MS = 800;
+    function ExerciseThumb({ entry, library, size = 40 }) {
+      const [playing, setPlaying] = useState(false);
+      const [frame, setFrame] = useState(0);
+      const [failed, setFailed] = useState(false);
+      useEffect(() => {
+        if (!playing) return;
+        const id = setInterval(() => setFrame(f => (f + 1) % 2), THUMB_FRAME_MS);
+        return () => clearInterval(id);
+      }, [playing]);
+      const box = { width: size, height: size };
+      if (!entry?.image || !library?.imageBase || failed) {
+        return <span className="shrink-0 rounded-lg bg-gray-100 flex items-center justify-center text-lg" style={box} aria-hidden="true" data-exercise-thumb="icon">{EQUIPMENT_ICONS[entry?.equipment] || '🏋️'}</span>;
+      }
+      const toggle = (e) => { e.stopPropagation(); setPlaying(p => { if (p) setFrame(0); return !p; }); };
+      return (
+        <button type="button" onClick={toggle} aria-label={`${entry.name} 동작 ${playing ? '멈추기' : '보기'}`} data-exercise-thumb={playing ? 'playing' : 'still'}
+          className={`shrink-0 rounded-lg overflow-hidden bg-gray-100 ${playing ? 'ring-2 ring-green-500' : ''}`} style={box}>
+          <img src={`${library.imageBase}${entry.image}/${frame}.jpg`} alt="" loading="lazy" width={size} height={size}
+            className="w-full h-full object-cover" onError={() => setFailed(true)} />
+        </button>
+      );
+    }
+
     // ★ v0.5.4 운동 중 띠: 다른 탭에 있을 때 위에 보여주고 누르면 운동 탭으로 돌아간다.
     function WorkoutBanner({ session, onOpen }) {
       const [now, setNow] = useState(Date.now());
@@ -2819,7 +2846,8 @@
           <div className="space-y-2 max-h-72 overflow-y-auto">
             {searchExerciseLibrary(library, query, [...sessionKeys, ...(session.picked || [])]).slice(0, 30).map(e => (
               <div key={e.key} className="flex items-center justify-between gap-2 text-sm" data-session-search-result={e.key}>
-                <span className="min-w-0">{nameButton(e.key, e.name)}<span className="text-[11px] text-gray-400 ml-1.5">{shortTargetLabels(e).join('·')} · {library.equipmentLabels?.[e.equipment]}</span></span>
+                <ExerciseThumb entry={e} library={library} />
+                <span className="min-w-0 flex-1">{nameButton(e.key, e.name)}<span className="text-[11px] text-gray-400 ml-1.5">{shortTargetLabels(e).join('·')} · {library.equipmentLabels?.[e.equipment]}</span></span>
                 <button type="button" onClick={() => addExercise(e.key)} className="shrink-0 text-xs font-bold text-white bg-green-600 px-2.5 py-1.5 rounded-lg">넣기</button>
               </div>
             ))}
@@ -2931,13 +2959,16 @@
                     const item = { input: exerciseInputKind(entry) };
                     const setsText = r.sets.map(x => formatSessionSet(item, x)).filter(Boolean);
                     return (
-                      <div key={r.key} className={`bg-white rounded-xl px-3 py-2 ${r.supplement ? 'border border-dashed border-amber-300' : ''}`} data-reco-item={r.key} data-reco-change={r.change}>
+                      <div key={r.key} className={`bg-white rounded-xl px-3 py-2 flex gap-2 items-start ${r.supplement ? 'border border-dashed border-amber-300' : ''}`} data-reco-item={r.key} data-reco-change={r.change}>
+                        <ExerciseThumb entry={entry} library={library} />
+                        <div className="min-w-0 flex-1">
                         <div className="flex items-baseline justify-between gap-2 text-sm">
                           <span className="min-w-0">{r.supplement ? <span className="text-[11px] font-bold text-amber-700 mr-1">+ 보충</span> : null}{nameButton(r.key, entry?.name || r.key)}</span>
                           <span className={`text-xs font-extrabold shrink-0 ${r.change === 'up' ? 'text-green-700' : r.change === 'down' ? 'text-blue-600' : 'text-gray-400'}`}>{changeMark[r.change]}</span>
                         </div>
                         <p className="text-[11px] text-gray-600">{setsText.length ? setsText.join(', ') : `${r.sets.length}세트 · 첫 세트에 입력`}</p>
                         <p className="text-[11px] text-gray-400">{r.reason}</p>
+                        </div>
                       </div>
                     );
                   })}
@@ -3023,6 +3054,7 @@
                         <div key={key} className={`flex items-center gap-2 rounded-xl px-2 py-1.5 ${on ? 'bg-green-50' : ''}`} data-pick-row={key}>
                           <button type="button" onClick={() => toggle(key)} aria-label={`${placeExerciseName(key, byKey)} ${on ? '빼기' : '고르기'}`}
                             className={`w-6 h-6 shrink-0 rounded-md border-2 flex items-center justify-center text-xs font-bold ${on ? 'bg-green-600 border-green-600 text-white' : 'border-gray-300 text-transparent'}`}>✓</button>
+                          <ExerciseThumb entry={entryFor(key)} library={library} />
                           <span className="min-w-0 flex-1 text-sm">
                             {nameButton(key, placeExerciseName(key, byKey))}
                             <span className="block text-[11px] text-gray-400 truncate">{placeKeys.includes(key) ? '' : <span className="text-amber-600 font-bold">목록에 없음 · </span>}{lastLine(key)}</span>
@@ -3592,7 +3624,8 @@
                 <div className="space-y-2 max-h-80 overflow-y-auto">
                   {results.map(e => (
                     <div key={e.key} className="flex items-center justify-between gap-2 text-sm" data-search-result={e.key}>
-                      <div className="min-w-0">
+                      <ExerciseThumb entry={e} library={library} />
+                      <div className="min-w-0 flex-1">
                         {nameButton(e.key, e.name)}{targetsText(e)}
                         <span className="text-[11px] text-gray-400 ml-1.5">· {library.equipmentLabels?.[e.equipment]}</span>
                       </div>
