@@ -7,9 +7,9 @@
 | 항목 | 버전 | 비고 |
 |---|---|---|
 | 운영 화면 `index.html` | **v0.5.6** | 2026-11-26 교체(v0.4.7~v0.5.6 함께 반영). 되돌리기: `index_rollback_pre_v0.5.6.html`(v0.4.6) |
-| 서버 `diet-ai` | **v0.0.25** | Supabase 함수 버전 32. 기본 모델 gemini-3.5-flash-lite, 대체 gemini-3.1-flash-lite |
+| 서버 `diet-ai` | **v0.0.26** | Supabase 함수 버전 33(2026-11-26, D: PC에서 배포·일치 확인). 기본 모델 gemini-3.5-flash-lite, 대체 gemini-3.1-flash-lite. v0.0.26: 습관 주간 한마디 `habitWeeklyNote` |
 | 종목 사전 | `exercise_library_v1.json` | 168종목, 장비 13종 |
-| 시험판 | **v0.6.0** | 짝 습관·주간 점검(2026-11-26 시험 중, 운영 아님) |
+| 시험판 | **v0.6.1** | 짝 습관·주간 점검(v0.6.0) + AI 주간 한마디(v0.6.1). 2026-11-26 시험 중, 운영 아님 |
 | DB 추가 칸 | `logs.exercise_meta`(v2), `profiles.workout_places` | 백업 표 `exercise_meta_backup_v050`(v0.5.0 일괄 처리 전 백업, 122행) |
 | DB (v0.6.0) | `routines.bad_habit`·`min_version`, `routine_checks` 상태 `mini`·`slipped`와 `bad_value`, 표 `habit_weekly_reviews` | `habit_pairs_v0.6.0.sql` 적용 완료(2026-11-26) |
 
@@ -63,7 +63,8 @@
   - 전체 점수 대신 습관별로 잘 지키는 것 / 흔들리는 것 / 기록이 부족한 것을 보여 준다(정직하게 기록하게).
   - 처음 설정은 가볍게: 새로 적는 칸은 "버릴 습관" 하나, 최소 버전은 선택.
 - **v0.6.0(시험 중)**: AI 한마디를 뺀 전부. `RELEASE_v0.6.0.md`
-- **다음 v0.6.1**: AI 주간 한마디(서버 action 추가, 결과는 `habit_weekly_reviews.ai_note`, 주 1회, 실패해도 점검은 그대로, 습관 이름·기록 수만 보냄)
+- **v0.6.1(시험 중) / 서버 v0.0.26**: AI 주간 한마디(`habitWeeklyNote`, 결과는 `habit_weekly_reviews.ai_note`, 주 1회, 실패해도 점검은 그대로, 습관 이름·기록 수만 보냄). `RELEASE_v0.6.1.md`
+- 다음: 사용자가 실제로 써 본 뒤 운영 `index.html` 교체(v0.6.1). 그 전에 고칠 점이 나오면 v0.6.2로.
 - 관련 코드: `function RoutineTab`, 홈 루틴 칩, `fetchRoutineData`, `isRoutineAutoDone`(운동·복용 연결)
 - 관련 표: `routines`, `routine_checks`
 
