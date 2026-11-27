@@ -29,7 +29,9 @@ const boxes = grab('    function PairBoxes(', '    // ★ v0.6.0 주간 습관 �
   pass('winner grows in width (max 60%) and letter size, counts per box, chosen box filled');
 }
 {
-  assert.ok(html.includes("{!pair && <RoutineCheckButton routine={routine} state={state} value={value} onTap={onTap} />}"), 'no check circle on pair rows');
+  // v0.6.6부터 짝 습관 자리에는 누르지 않는 상태 표시(PairStatusDot)가 들어간다
+  assert.ok(html.includes("{!pair && <RoutineCheckButton routine={routine} state={state} value={value} onTap={onTap} />}")
+    || html.includes("{pair ? <PairStatusDot state={state} /> : <RoutineCheckButton routine={routine} state={state} value={value} onTap={onTap} />}"), 'no check circle on pair rows');
   assert.ok(html.includes('? <PairBoxes routine={routine} check={check} state={state} balance={balance} onChoose={onChoose} base={14} />'), 'routine tab rows use boxes');
   assert.ok(html.includes("{routine.kind === 'count' && !pair && ("), 'count bar replaced by counts in the boxes');
   assert.ok(html.includes('<PairBoxes routine={pairOpen} check={getCheck(pairOpen.id, date)} state={stateOf(pairOpen)} balance={pairBalance(pairOpen, getCheck, isAutoDone, date)}'), 'home panel uses boxes');
