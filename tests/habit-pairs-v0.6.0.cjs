@@ -82,7 +82,8 @@ const noAuto = () => false;
   assert.equal(ctx.habitTrend({ ...prevGood, rate: 95 }, prevGood), '');
   const sug = (r, cur, prev) => plain(ctx.habitSuggestion(r, cur, prev));
   assert.equal(sug(R(), shaky, prevGood).type, 'set_min');
-  assert.equal(sug(R({ min_version: '1쪽만' }), shaky, prevGood).type, 'smaller_min');
+  // 글로 적은 최소 버전(v0.6.2부터 숫자 최소 버전은 tests/habit-simple-v0.6.2.cjs에서 검사)
+  assert.equal(sug(R({ min_version: '스트레칭 5분' }), shaky, prevGood).type, 'smaller_min');
   assert.equal(sug(R({ bad_habit: '' }), plainRoutine, prevGood).type, 'set_bad', 'plain shaky routine: suggest naming the bad habit');
   assert.deepEqual(sug(R({ kind: 'count', target: 10, step: 5, unit: '쪽' }), prevGood, prevGood).target, 15, 'good two windows: raise the goal');
   assert.equal(sug(R({ min_version: '1쪽만' }), prevGood, prevGood).type, 'raise_min');
@@ -109,10 +110,10 @@ const noAuto = () => false;
 {
   for (const [name, text] of [
     ['bad habit field', '🚫 버릴 습관 (선택)'],
-    ['min version optional', '+ 힘든 날의 최소 버전 정하기 (선택)'],
+    ['min version optional', html.includes('◐ 힘든 날 최소 (선택)') ? '◐ 힘든 날 최소 (선택)' : '+ 힘든 날의 최소 버전 정하기 (선택)'],
     ['form saves both', "bad_habit: String(d.bad_habit || '').trim().slice(0, 60),"],
     ['choice buttons', "onClick={() => onChoose('mini')}"],
-    ['mini label shows the min version', "◐ 조금이라도{routine.min_version ? ` (${routine.min_version})` : ''}"],
+    ['mini label shows the min version', html.includes('`◐ 최소 ${routine.min_version}`') ? '`◐ 최소 ${routine.min_version}`' : "◐ 조금이라도{routine.min_version ? ` (${routine.min_version})` : ''}"],
     ['choose action', "return putRoutineCheck(routine, date, { status: choice, value: 0 });"],
     ['same choice again cancels', 'return undoRoutineCheck(routine, date);'],
     ['bad_value kept on save', 'bad_value: prev?.bad_value || 0,'],
