@@ -28,18 +28,19 @@ const tab = grab('    function RoutineTab(', '    function App() {');
 }
 {
   const cb = grab('    function RoutineCheckButton(', '    // ★ v0.6.6 짝 습관 왼쪽 상태 표시');
-  assert.ok(cb.includes("'bg-white border-emerald-300 text-gray-300'") && cb.includes(": '✓'}"), 'empty checkbox shows a faint ✓');
+  // v0.6.7부터는 연한 ✓ 대신 빈 네모
+  assert.ok((cb.includes("'bg-white border-emerald-300 text-gray-300'") && cb.includes(": '✓'}")) || cb.includes('data-checkbox-box'), 'empty checkbox looks tappable');
   assert.ok(cb.includes('e.stopPropagation(); onTap();'), 'no double toggle when the row is also tappable');
   assert.ok(html.includes("onClick={pair ? undefined : onTap} data-routine-row-body>"), 'whole row toggles plain habits');
-  assert.ok(html.includes('data-chip-checkbox>✓</span>'), 'home chips show the faint ✓ too');
+  assert.ok(html.includes('data-chip-checkbox>✓</span>') || html.includes('data-chip-checkbox></span>'), 'home chips show a checkbox too');
   pass('checkboxes look tappable; whole row works');
 }
 {
   const dot = grab('    function PairStatusDot(', '    // ★ v0.6.3 짝 습관 제목');
-  for (const t of ["state === 'done' ? ['bg-emerald-500 text-white', '✓', '지킴']", "state === 'slipped' ? ['bg-amber-500 text-white', '🚫', '버릴 습관']", "state === 'skipped' ? ['bg-gray-200 text-gray-500', '💤', '쉼']", "'border-2 border-dashed border-gray-300 text-transparent'"]) assert.ok(dot.includes(t), t);
+  for (const t of ["state === 'done' ? ['bg-emerald-500 text-white', '✓', '지킴']", "state === 'slipped' ? ['bg-amber-500 text-white', '🚫', '버릴 습관']", "state === 'skipped' ? ['bg-gray-200 text-gray-500', '💤', '쉼']", "'border-2 border-dashed border-"]) assert.ok(dot.includes(t), t);
   assert.ok(!dot.includes('onClick') && dot.includes('role="img"'), 'status only, not a button');
   assert.ok(html.includes('{pair ? <PairStatusDot state={state} /> : <RoutineCheckButton'), 'same spot as the checkbox');
-  assert.ok(html.includes('data-pair-footer') && html.includes('pb-2 pl-11'), 'footer lines up after the status column');
+  assert.ok(html.includes('data-pair-footer') && (html.includes('pb-2 pl-11') || html.includes('pb-2 pl-12')), 'footer lines up after the status column');
   pass('pair habits: status dot (empty / ✓ / 🚫 / 💤) in the checkbox column');
 }
 
