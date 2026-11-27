@@ -39,19 +39,21 @@ const bal = (spec) => plain(ctx.pairBalance(R, make(spec), () => false, '2026-11
 }
 
 {
-  const title = grab('    function PairTitle(', '    // ★ v0.6.0 짝 습관 기록 버튼');
+  const boxes = html.includes('    function PairBoxes('); // v0.6.4부터 두 상자
+  const title = grab('    function PairTitle(', boxes ? '    // ★ v0.6.4 짝 습관 기록' : '    // ★ v0.6.0 짝 습관 기록 버튼');
   assert.ok(title.includes('const goodPx = Math.round(base * PAIR_LEVEL_SCALE[balance?.goodLevel || 0]);') && title.includes('const badPx = Math.round(base * PAIR_LEVEL_SCALE[balance?.badLevel || 0]);'), 'same base size for both sides');
-  assert.ok(title.includes('text-emerald-700') && title.includes('text-amber-600'), 'different colours');
+  assert.ok(/text-emerald-[78]00/.test(title) && /text-amber-[68]00/.test(title), 'different colours');
   assert.ok(title.includes('<div className="flex items-baseline gap-1.5 min-w-0">') && (title.match(/min-w-0 max-w-\[50%\] truncate/g) || []).length === 2, 'one line, each side at most half, cut with … when long');
-  assert.ok(html.includes('{pair && onChoose && <div className="pb-1.5" data-pair-choices-row><PairChoiceBar'), 'choice buttons use the full row width');
+  assert.ok(boxes || html.includes('{pair && onChoose && <div className="pb-1.5" data-pair-choices-row><PairChoiceBar'), 'choice buttons use the full row width');
   assert.ok(title.includes('transition-all duration-500'), 'grows smoothly');
   assert.ok(title.includes('최근 2주 <span className="text-emerald-600 font-bold">{balance.kept}</span> : <span className="text-amber-600 font-bold">{balance.slipped}</span>'), 'shows 7 : 3');
-  const bar = grab('    function PairChoiceBar(', '    // ★ v0.6.0 주간 습관 점검');
+  const bar = grab(boxes ? '    function PairBoxes(' : '    function PairChoiceBar(', '    // ★ v0.6.0 주간 습관 점검');
   assert.ok(!bar.includes('vs 🚫'), 'no second "vs" line under the buttons');
+  // v0.6.4부터 기록하는 곳(루틴 줄·홈 칸)은 두 상자, 보기만 하는 곳(목록·점검)은 한 줄 제목
   for (const [name, text] of [
-    ['routine tab rows', '<PairTitle routine={routine} balance={balance} base={14}'],
+    ['routine tab rows', boxes ? '<PairBoxes routine={routine} check={check} state={state} balance={balance} onChoose={onChoose} base={14} />' : '<PairTitle routine={routine} balance={balance} base={14}'],
     ['rows get the balance for the viewed day', 'balance: isPairRoutine(r) ? pairBalance(r, getCheck, isAutoDone, date) : null,'],
-    ['home panel', '<PairTitle routine={pairOpen} balance={pairBalance(pairOpen, getCheck, isAutoDone, date)} base={13} />'],
+    ['home panel', boxes ? 'balance={pairBalance(pairOpen, getCheck, isAutoDone, date)}' : '<PairTitle routine={pairOpen} balance={pairBalance(pairOpen, getCheck, isAutoDone, date)} base={13} />'],
     ['my routine list', '<PairTitle routine={r} balance={pairBalance(r, getCheck, isAutoDone, today)} base={14} />'],
     ['weekly review', '<PairTitle routine={x.r} balance={pairBalance(x.r, getCheck, isAutoDone, target.end)} base={14} showCount={false} />'],
   ]) assert.ok(html.includes(text), name);

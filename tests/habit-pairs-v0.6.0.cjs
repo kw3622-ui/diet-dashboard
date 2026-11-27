@@ -126,8 +126,9 @@ const noAuto = () => false;
     ['suggestions applied through saveRoutine', 'onApply={(r, patch) => saveRoutine(r, patch)}'],
     ['no streak flame on pair habits', '{st.current > 0 && !isPairRoutine(r) &&'],
   ]) assert.ok(html.includes(text), name);
-  const bar = grab('    function PairChoiceBar(', '    // ★ v0.6.0 주간 습관 점검');
-  const btnClasses = bar.match(/flex-1 min-w-0 truncate text-\[11px\] font-bold px-2 py-1\.5/g) || [];
+  // v0.6.4부터 버튼 줄(PairChoiceBar)이 두 상자(PairBoxes)로 바뀌었다. 어느 쪽이든 버튼 모양은 하나다.
+  const bar = html.includes('    function PairChoiceBar(') ? grab('    function PairChoiceBar(', '    // ★ v0.6.0 주간 습관 점검') : grab('    function PairBoxes(', '    // ★ v0.6.0 주간 습관 점검');
+  const btnClasses = bar.match(/(flex-1|w-full) min-w-0 truncate text-\[11px\] font-bold px-2 py-1\.5/g) || [];
   assert.equal(btnClasses.length, 1, 'one shared button style: good and bad choices are the same size');
   assert.ok(!grab('    function HabitReviewSheet(', '    // 루틴 한 줄:').includes('전체 점수'), 'no overall score');
   pass('screen wiring: form, equal-size choices, choose/undo, home panel, comeback, weekly review');
